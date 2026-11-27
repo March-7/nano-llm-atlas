@@ -18,7 +18,7 @@ const traceInfo = {
   output: ['输出层 · Softmax 概率', 'Readout · softmax probabilities'],
 };
 
-export function mountLab(host, onInspect) {
+export function mountLab(host, onInspect, onPrefix) {
   let modelId, lang, stage;
   let input = 'AACBAB',
     generated = '',
@@ -188,10 +188,11 @@ export function mountLab(host, onInspect) {
     prediction = null;
     problem = false;
     pending = valid();
+    if (pending) onPrefix?.(input + generated.slice(0, 5));
     drawNano();
     if (!pending) return;
     try {
-      const { predictNano } = await import('./nano.js');
+      const { predictNano } = await import('./nano.js?v=2');
       const result = await predictNano(input + generated.slice(0, 5), { trace: true });
       if (request === version) prediction = result;
     } catch {
@@ -346,11 +347,11 @@ export function mountLab(host, onInspect) {
     } else if (button.hasAttribute('data-head')) {
       queryHead = Number(button.dataset.head);
       drawMap();
-      onInspect('attention');
+      onInspect('attention', { queryHead });
     } else if (button.hasAttribute('data-layer')) {
       layer = Number(button.dataset.layer);
       drawMap();
-      onInspect(layer % 4 ? 'delta' : 'attention');
+      onInspect(layer % 4 ? 'delta' : 'attention', { layer: (layer - 1) % 4 });
     }
   });
   host.addEventListener('keydown', (event) => {
@@ -376,11 +377,28 @@ export function mountLab(host, onInspect) {
     target.click();
   });
   return {
+    currentPrefix() {
+      return valid() ? input + generated.slice(0, 5) : null;
+    },
+    restorePrefix(value) {
+      if (!/^[ABC]{6,11}$/.test(value)) return;
+      ++version;
+      input = value.slice(0, 6);
+      generated = value.slice(6);
+      pending = false;
+      problem = false;
+      prediction = null;
+    },
     show(id, locale, selection) {
       const previous = modelId;
       modelId = id;
       lang = locale;
       stage = selection;
+      host.hidden = !['nanogpt', 'llama', 'qwen'].includes(id);
+      if (host.hidden) {
+        host.replaceChildren();
+        return;
+      }
       if (id === 'nanogpt') {
         showNano();
         if ((previous !== id || !prediction) && !pending) compute();

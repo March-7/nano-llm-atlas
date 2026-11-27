@@ -15,7 +15,7 @@ export const models = [
     ),
     stats: [
       metric('参数量', 'Parameters', '85,728'),
-      { ...metric('解码层数', 'Decoder layers', '3'), shown: 1 },
+      { ...metric('解码层数', 'Decoder layers', '3'), shown: 3 },
       metric('隐藏宽度', 'Hidden width', '48'),
       metric('上下文长度', 'Context length', '11'),
     ],
@@ -92,8 +92,8 @@ export const models = [
       },
     ],
     scope: text(
-      '原演示用 minGPT 训练六字母排序。图中展开一个解码块，原模型依次执行三块。六个输入加上前五个输出，恰好用满 11 个上下文位置。',
-      'Bycroft’s minGPT demo sorts six letters. The view opens one of three decoder blocks. Six inputs and the first five outputs fill the 11 positions needed to predict the last letter.',
+      '图中展开全部 3 个解码块和 9 个注意力头实例。每个学习参数都对应检查点中的一个标量。排序实验更改前缀时，三个解码块的激活同步重算。',
+      'All three decoder blocks and all nine head instances are expanded. Each learned parameter maps to one checkpoint scalar. Editing the sorting prefix recomputes activations throughout the network.',
     ),
     gallery: {
       url: 'https://sebastianraschka.com/llm-architecture-gallery/models/gpt-2-xl-1-5b/',

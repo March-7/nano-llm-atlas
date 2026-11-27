@@ -1,33 +1,25 @@
 import assert from 'node:assert/strict';
 import { readFile } from 'node:fs/promises';
 import { test } from 'node:test';
-import { models } from '../src/catalog.js';
-import { buildArchitecture } from '../src/geometry.js';
+import { models, chapters, isModern } from '../src/detail/catalog.js';
+import { classicLayout } from '../src/detail/classic-layout.js';
+import { modernExample } from '../src/detail/modern.js';
 import { predictNano } from '../src/nano.js';
 
-test('each inspector stage maps to geometry in both compact and exploded views', () => {
-  for (const model of models) {
-    for (const spread of [0, 1]) {
-      const { stations, parts } = buildArchitecture(model.id, spread);
-      assert.deepEqual(
-        stations.map((s) => s.stage),
-        model.stages.map((s) => s.id),
+test('each walkthrough entry resolves to a visible tensor in the six published graphs', () => {
+  assert.deepEqual(
+    models.map((model) => model.id),
+    ['gpt2-small', 'nanogpt', 'gpt2-xl', 'gpt3', 'llama', 'qwen'],
+  );
+  for (const { id } of models) {
+    const graph = isModern(id) ? modernExample(id).layout : classicLayout(id);
+    const first = graph.layers[0].nodes();
+    const last = graph.layers.at(-1).nodes();
+    for (const item of chapters(id)) {
+      assert.ok(
+        [...graph.root, ...first, ...last].some((node) => node.op === item.op || node.stage === item.op),
+        id + ' / ' + item.op,
       );
-      for (const { id } of model.stages) assert.ok(parts.some((part) => part.stage === id));
-      const count = (prefix) => parts.filter((part) => part.id.startsWith(prefix)).length;
-      if (model.id === 'nanogpt') {
-        assert.equal(count('masked-scores-'), 3);
-        assert.equal(count('position-embedding'), 1);
-      } else {
-        assert.equal(count('shared-key'), 1);
-        assert.equal(count('shared-value'), 1);
-        assert.equal(count('query-head-'), model.id === 'llama' ? 4 : 6);
-      }
-      if (model.id === 'qwen') {
-        assert.equal(count('delta-state-'), 3);
-        assert.equal(count('delta-ffn-'), 3);
-        assert.equal(count('ffn-gate'), 1);
-      }
     }
   }
 });

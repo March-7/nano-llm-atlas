@@ -1,3 +1,5 @@
+import { makeNanoInspector } from './detail/nano-inspect.js';
+
 // Trained sorting checkpoint from bbycroft/llm-viz, revision 9da93742382f.
 // The original MIT notice accompanies the weights in assets/gpt-nano-sort-LICENSE.txt.
 const tokens = 'ABC';
@@ -34,18 +36,22 @@ function linear(input, matrix, bias) {
   return result;
 }
 
-function layerNorm(input, gain, bias) {
+function layerNorm(input, gain, bias, record) {
   const mean = input.reduce((sum, x) => sum + x, 0) / input.length;
   const variance = input.reduce((sum, x) => sum + (x - mean) ** 2, 0) / input.length;
   const scale = 1 / Math.sqrt(variance + 1e-5);
-  return input.map((x, i) => (x - mean) * scale * gain.values[i] + bias.values[i]);
+  const output = input.map((x, i) => (x - mean) * scale * gain.values[i] + bias.values[i]);
+  if (record) Object.assign(record, { input, mean, variance, scale, output });
+  return output;
 }
 
-function softmax(logits) {
+function softmax(logits, record) {
   const peak = Math.max(...logits);
   const exp = Array.from(logits, (x) => Math.exp(x - peak));
   const sum = exp.reduce((total, x) => total + x, 0);
-  return exp.map((x) => x / sum);
+  const probabilities = exp.map((x) => x / sum);
+  if (record) Object.assign(record, { logits, peak, inverseSum: 1 / sum, probabilities });
+  return probabilities;
 }
 
 function residual(input, update) {
@@ -56,7 +62,7 @@ function gelu(x) {
   return 0.5 * x * (1 + Math.tanh(Math.sqrt(2 / Math.PI) * (x + 0.044715 * x ** 3)));
 }
 
-function causalAttention(qkv, position, heads, width, headWeights) {
+function causalAttention(qkv, position, heads, width, headWeights, inspectedHeads) {
   const headSize = width / heads;
   const mixed = new Float32Array(width);
   for (let head = 0; head < heads; head++) {
@@ -69,7 +75,9 @@ function causalAttention(qkv, position, heads, width, headWeights) {
       }
       logits.push(score / Math.sqrt(headSize));
     }
-    const weights = softmax(logits);
+    const record = inspectedHeads ? {} : null;
+    const weights = softmax(logits, record);
+    inspectedHeads?.push(record);
     headWeights?.push(weights);
     for (let d = start; d < start + headSize; d++) {
       let sum = 0;
@@ -85,6 +93,15 @@ function causalAttention(qkv, position, heads, width, headWeights) {
  * position, using the first decoder block for normalization, attention, and GELU.
  */
 export async function predictNano(prefix, { trace = false } = {}) {
+  return forward(prefix, trace, false);
+}
+
+/** Inspect all checkpoint parameters and computed activations for one sorting prefix. */
+export async function inspectNano(prefix) {
+  return forward(prefix, false, true);
+}
+
+async function forward(prefix, trace, inspect) {
   if (typeof prefix !== 'string' || prefix.length === 0 || prefix.length > 11 || /[^ABC]/.test(prefix)) {
     throw new RangeError('Expected a prefix of 1–11 uppercase A/B/C letters.');
   }
@@ -102,34 +119,54 @@ export async function predictNano(prefix, { trace = false } = {}) {
   });
   const last = prefix.length - 1;
   const traces = trace ? { embed: [Array.from(states[last])], attention: [] } : null;
+  const snapshot = inspect ? { prefix, config, tensors, embed: states, layers: [], final: [] } : null;
 
   for (let i = 0; i < config.n_layer; i++) {
     const block = 'transformer.h.' + i + '.';
     const tensor = (key) => tensors[block + key];
     const firstBlockTrace = i === 0 ? traces : null;
+    const rows = inspect ? states.map((input) => ({ input, ln1: {}, ln2: {}, heads: [] })) : null;
     const qkv = states.map((state, t) => {
-      const norm = layerNorm(state, tensor('ln_1.weight'), tensor('ln_1.bias'));
+      const norm = layerNorm(state, tensor('ln_1.weight'), tensor('ln_1.bias'), rows?.[t].ln1);
       if (firstBlockTrace && t === last) firstBlockTrace.norm = [Array.from(norm)];
       return linear(norm, tensor('attn.c_attn.weight'), tensor('attn.c_attn.bias'));
     });
     states = states.map((state, t) => {
       const capture = t === last ? firstBlockTrace : null;
-      const mixed = causalAttention(qkv, t, config.n_head, width, capture?.attention);
+      const row = rows?.[t];
+      const mixed = causalAttention(qkv, t, config.n_head, width, capture?.attention, row?.heads);
       const projected = linear(mixed, tensor('attn.c_proj.weight'), tensor('attn.c_proj.bias'));
       const attended = residual(state, projected);
-      const norm = layerNorm(attended, tensor('ln_2.weight'), tensor('ln_2.bias'));
-      const expanded = linear(norm, tensor('mlp.c_fc.weight'), tensor('mlp.c_fc.bias')).map(gelu);
+      const norm = layerNorm(attended, tensor('ln_2.weight'), tensor('ln_2.bias'), row?.ln2);
+      const fc = linear(norm, tensor('mlp.c_fc.weight'), tensor('mlp.c_fc.bias'));
+      const expanded = fc.map(gelu);
       if (capture) capture.ffn = [Array.from(expanded)];
       const update = linear(expanded, tensor('mlp.c_proj.weight'), tensor('mlp.c_proj.bias'));
-      return residual(attended, update);
+      const output = residual(attended, update);
+      if (row)
+        Object.assign(row, { qkv: qkv[t], mixed, projected, attended, fc, expanded, update, output });
+      return output;
     });
+    if (rows) snapshot.layers.push(rows);
   }
-  const final = layerNorm(
-    states.at(-1),
-    tensors['transformer.ln_f.weight'],
-    tensors['transformer.ln_f.bias'],
-  );
-  const probabilities = softmax(linear(final, tensors['lm_head.weight']));
+  function readout(state, row) {
+    const final = layerNorm(
+      state,
+      tensors['transformer.ln_f.weight'],
+      tensors['transformer.ln_f.bias'],
+      row?.ln,
+    );
+    return softmax(linear(final, tensors['lm_head.weight']), row?.sm);
+  }
+  if (snapshot) {
+    for (const state of states) {
+      const row = { ln: {}, sm: {} };
+      readout(state, row);
+      snapshot.final.push(row);
+    }
+    return makeNanoInspector(snapshot);
+  }
+  const probabilities = readout(states[last]);
   const prediction = {
     probabilities,
     nextToken: tokens[probabilities.indexOf(Math.max(...probabilities))],
