@@ -6,6 +6,8 @@
 
 点开 NanoGPT 的第二个 LayerNorm，可以逐格对照坐标、公式、数值与依赖。[进入 t=4, c=11](https://march-7.github.io/nano-llm-atlas/?model=nanogpt&tensor=ln2.lnResid&layer=1&x=4&y=11&lang=zh) · [查看单元截图](docs/nanogpt-cell.webp)
 
+点击章节目录、流程图或「下一节」，画布会演示这一章的张量计算。例如 Llama 的 RMSNorm 从一个词元的输入列开始，逐通道累计平方和，计算逆 RMS，读取增益，最后把结果写回选中的单元。画布下方可以暂停、重播和拖动到任一步。「播放导览」会在本节计算结束后接着播下一节。系统开启减少动态效果时，可以手动逐步查看。[播放 Llama RMSNorm](https://march-7.github.io/nano-llm-atlas/?model=llama&lang=zh&stage=norm) · [观看实际操作录屏](https://march-7.github.io/nano-llm-atlas/docs/llama-rmsnorm.mp4)
+
 ## 六个模型
 
 | 三维入口 | 展开范围 | 单元数据 |
@@ -36,6 +38,7 @@
 | --- | --- |
 | [Program.ts](https://github.com/bbycroft/llm-viz/blob/9da93742382f1bf36c020c38a1ace454e82c4490/src/llm/Program.ts) · [ModelSelectorToolbar.tsx](https://github.com/bbycroft/llm-viz/blob/9da93742382f1bf36c020c38a1ace454e82c4490/src/llm/components/ModelSelectorToolbar.tsx) | 四种形状配置、镜头与模型切换顺序 |
 | [GptModelLayout.ts](https://github.com/bbycroft/llm-viz/blob/9da93742382f1bf36c020c38a1ace454e82c4490/src/llm/GptModelLayout.ts) | 权重、偏置、中间激活与标量依赖的三维布局 |
+| [Walkthrough03_LayerNorm.tsx](https://github.com/bbycroft/llm-viz/blob/9da93742382f1bf36c020c38a1ace454e82c4490/src/llm/walkthrough/Walkthrough03_LayerNorm.tsx) | 参考其抽出输入列、逐步聚合与写回的讲解方式。本站按各模型的算子和数值生成分步动画。 |
 | [Interaction.ts](https://github.com/bbycroft/llm-viz/blob/9da93742382f1bf36c020c38a1ace454e82c4490/src/llm/Interaction.ts) · [DataFlow.ts](https://github.com/bbycroft/llm-viz/blob/9da93742382f1bf36c020c38a1ace454e82c4490/src/llm/components/DataFlow.ts) | 单元坐标、依赖行列、归一化和矩阵乘法公式 |
 
 NanoGPT 使用原演示的训练权重。现代教学图的结构依据官方模型资料。字体随站点提供。[NanoGPT 权重](https://github.com/bbycroft/llm-viz/blob/9da93742382f1bf36c020c38a1ace454e82c4490/public/gpt-nano-sort-model.json) · [Meta 模型卡](https://huggingface.co/meta-llama/Llama-3.1-8B-Instruct) · [Qwen 配置](https://huggingface.co/Qwen/Qwen3.8-27B/blob/main/config.json) · [DM Sans 许可](assets/fonts/DM-Sans-OFL.txt) · [IBM Plex Mono 许可](assets/fonts/IBM-Plex-Mono-OFL.txt)

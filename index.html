@@ -13,7 +13,8 @@
     <link rel="stylesheet" href="./src/style.css?v=3" />
     <link rel="stylesheet" href="./src/detail/view.css?v=3" />
     <link rel="stylesheet" href="./src/detail/reader.css?v=3.1" />
-    <script type="module" src="./src/app.js?v=3.1"></script>
+    <link rel="stylesheet" href="./src/detail/computation.css?v=4" />
+    <script type="module" src="./src/app.js?v=4"></script>
   </head>
   <body>
     <a class="skip" href="#scene" data-t="skip">跳到计算图</a>
@@ -89,6 +90,9 @@
               <h3 id="lesson-heading"></h3>
               <p id="stage-description"></p>
               <code id="lesson-formula" hidden></code>
+              <button type="button" id="lesson-demo" class="play-button" hidden>
+                <i data-icon="play"></i><span data-t="demo">演示本节计算</span>
+              </button>
             </article>
           </section>
           <section class="panel picked-panel" id="picked-panel" hidden>
@@ -200,6 +204,23 @@
             <circle id="callout-dot" r="2" />
           </svg>
           <div id="cell-tip" class="cell-tip" role="tooltip" hidden></div>
+          <section id="motion-player" class="motion-player" data-tip="motionTitle" hidden>
+            <div class="motion-heading" aria-live="polite" aria-atomic="true">
+              <span id="motion-count"></span><strong id="motion-title"></strong>
+            </div>
+            <button type="button" id="motion-close" class="motion-close" data-tip="motionClose">
+              <i data-icon="close"></i>
+            </button>
+            <code id="motion-formula"></code>
+            <div class="motion-transport">
+              <button type="button" id="motion-toggle"></button>
+              <button type="button" id="motion-prev" data-tip="motionPrev"><i data-icon="left"></i></button>
+              <input type="range" id="motion-seek" min="0" max="1000" step="1" data-tip="motionSeek" />
+              <button type="button" id="motion-next" data-tip="motionNext">
+                <i data-icon="right"></i>
+              </button>
+            </div>
+          </section>
           <div class="stage-legend" id="legend">
             <span><b class="swatch weight"></b><span data-t="weights">权重</span></span>
             <span><b class="swatch active"></b><span data-t="activations">激活</span></span>

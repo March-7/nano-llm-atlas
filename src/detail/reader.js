@@ -1,7 +1,7 @@
 import { escapeHTML as escape, icon } from '../ui.js';
 import { chapters } from './catalog.js';
 import { chapterMap } from './chapter-map.js';
-import { messages } from './words.js?v=3';
+import { messages } from './words.js?v=4';
 
 const $ = (id) => document.getElementById(id);
 
@@ -227,6 +227,7 @@ export function mountReader({ onChapter, onModelOverview, onAll }) {
         $('stage-description').textContent = info.text;
         $('lesson-formula').hidden = !info.formula;
         $('lesson-formula').textContent = info.formula || '';
+        $('lesson-demo').hidden = !section;
         const progress = $('chapter-progress');
         progress.max = items.length;
         progress.value = current + 1;

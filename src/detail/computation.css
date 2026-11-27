@@ -1,0 +1,132 @@
+.lesson-reading #lesson-demo {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  margin-top: 10px;
+}
+#lesson-demo .icon {
+  width: 11px;
+  height: 11px;
+}
+.motion-player {
+  position: absolute;
+  z-index: 4;
+  left: 50%;
+  bottom: 51px;
+  transform: translateX(-50%);
+  width: min(calc(100% - 24px), 570px);
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) 22px;
+  align-items: start;
+  row-gap: 5px;
+  padding: 9px 13px 8px;
+  color: #203248;
+  background: rgba(252, 253, 252, 0.97);
+  border: 1px solid #aebbc5;
+  border-radius: 6px;
+  box-shadow: 0 3px 14px #192a4820;
+}
+.motion-player[hidden],
+#lesson-demo[hidden] {
+  display: none;
+}
+.motion-heading,
+.motion-transport {
+  display: flex;
+  align-items: center;
+  min-width: 0;
+}
+.motion-heading {
+  gap: 9px;
+  min-height: 20px;
+}
+#motion-count {
+  flex: none;
+  color: #57718a;
+  font: 500 11px/1.4 var(--mono);
+}
+#motion-title {
+  font-size: 13px;
+  line-height: 1.35;
+  font-weight: 650;
+}
+#motion-formula {
+  grid-column: 1 / -1;
+  color: #315844;
+  font: 500 12px/1.48 var(--mono);
+  overflow-wrap: anywhere;
+  white-space: pre-wrap;
+}
+.motion-player button {
+  display: inline-grid;
+  place-items: center;
+  flex: none;
+  height: 25px;
+  min-width: 25px;
+  padding: 3px;
+  color: #35506a;
+  background: transparent;
+  border: 1px solid transparent;
+  border-radius: 3px;
+}
+.motion-player button:hover:not(:disabled) {
+  background: #e1edf5;
+}
+.motion-player button:disabled {
+  opacity: 0.32;
+}
+.motion-player button:focus-visible,
+#motion-seek:focus-visible {
+  outline: 2px solid #5888b1;
+  outline-offset: 1px;
+}
+.motion-player button .icon {
+  width: 13px;
+  height: 13px;
+}
+.motion-player .motion-close {
+  height: 20px;
+  min-width: 20px;
+}
+.motion-transport {
+  grid-column: 1 / -1;
+  gap: 4px;
+}
+#motion-toggle {
+  background: #e5edf3;
+  border-color: #c3d2dc;
+  min-width: 31px;
+}
+#motion-seek {
+  flex: 1;
+  min-width: 36px;
+  height: 17px;
+  margin: 0 3px;
+  accent-color: #437fa5;
+  cursor: pointer;
+}
+@container viewport (max-width: 510px) {
+  .motion-player {
+    width: calc(100% - 14px);
+    bottom: 40px;
+    padding: 6px 9px;
+    row-gap: 2px;
+  }
+  #motion-formula {
+    font-size: 10px;
+  }
+  #motion-title {
+    font-size: 12px;
+  }
+}
+@media (max-height: 560px), (max-width: 760px) {
+  .motion-player {
+    row-gap: 2px;
+  }
+  .workspace.reader-open .motion-player {
+    bottom: 5px;
+  }
+  .workspace.reader-open .diagram:has(.motion-player:not([hidden])) :is(.zoom-tools, .stage-legend) {
+    visibility: hidden;
+  }
+}

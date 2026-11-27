@@ -1,6 +1,12 @@
 export const messages = {
   zh: {
     title: '语言模型三维计算图',
+    demo: '演示本节计算',
+    motionTitle: '逐步演示张量计算',
+    motionClose: '关闭动画，检查计算图',
+    motionSeek: '定位本节计算进度',
+    motionPrev: '上一个计算步骤',
+    motionNext: '下一个计算步骤',
     skip: '跳到三维计算图',
     graph: '三维计算图',
     reader: '章节导览',
@@ -49,6 +55,12 @@ export const messages = {
   },
   en: {
     title: '3D language model computation graphs',
+    demo: 'Animate this calculation',
+    motionTitle: 'Step-by-step computation',
+    motionClose: 'Close animation and inspect the graph',
+    motionSeek: 'Seek within this calculation',
+    motionPrev: 'Previous calculation step',
+    motionNext: 'Next calculation step',
     skip: 'Skip to the computation graph',
     graph: '3D graph',
     reader: 'Walkthrough',
@@ -99,6 +111,8 @@ export const messages = {
 export function guideRows(lang) {
   return lang === 'zh'
     ? [
+        ['观看计算过程', '点击章节或选择「下一节」'],
+        ['暂停、重播或定位步骤', '画布上的空格键 / 播放键与进度条'],
         ['移动视图', '拖动 / 单指平移'],
         ['旋转场景', '按住鼠标中键（滚轮）拖动'],
         ['以光标为中心缩放', '滚轮 / 双指捏合'],
@@ -109,6 +123,8 @@ export function guideRows(lang) {
         ['触屏旋转', '点旋转按钮后单指拖动'],
       ]
     : [
+        ['Watch a calculation', 'Choose a chapter or select Next'],
+        ['Pause, replay or seek', 'Space on the canvas / playback controls'],
         ['Pan the graph', 'Drag / one finger'],
         ['Orbit', 'Hold the middle mouse button and drag'],
         ['Zoom around the pointer', 'Wheel / pinch'],

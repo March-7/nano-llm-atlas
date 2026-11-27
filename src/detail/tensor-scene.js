@@ -7,6 +7,8 @@ import {
   toWorld,
   worldInsets,
 } from './atlas-world.js?v=3.1';
+import { chapterSequence } from './chapter-sequences.js';
+import { paintComputation, spanBounds } from './flow-paint.js';
 import {
   TileCache,
   basis,
@@ -152,7 +154,16 @@ function compareDepth(a, b, view) {
  */
 export function mountTensorScene(
   canvas,
-  { onCell, onPick, onZoom, onModelPick, onWorldLabels, onOverview } = {},
+  {
+    onCell,
+    onPick,
+    onZoom,
+    onModelPick,
+    onWorldLabels,
+    onOverview,
+    onExitComputation,
+    playbackInsets,
+  } = {},
 ) {
   const ctx = canvas.getContext('2d');
   const events = new AbortController(),
@@ -181,7 +192,8 @@ export function mountTensorScene(
     placements = new Map(),
     lastMarkers = '',
     returnToAtlas = true,
-    flight = null;
+    flight = null,
+    computation = null;
   const reducedMotion = window.matchMedia('(prefers-reduced-motion: reduce)');
   const stores = new WeakMap(),
     tiles = new TileCache(),
@@ -384,6 +396,7 @@ export function mountTensorScene(
   }
   function setLayout(next) {
     if (!next) return;
+    computation = null;
     flight = null;
     const prior = layout && placements.has(layout.id) ? globalView() : null;
     if (layout !== next) {
@@ -422,13 +435,20 @@ export function mountTensorScene(
     if (!placements.has(layout?.id)) setLayout(entries[0].layout);
     overview();
   }
+  function findNode(op, layer = 0, head = 0) {
+    if (!layout) return null;
+    const nodes = [...(layerAt(layer)?.nodes ?? []), ...layout.root];
+    return (
+      nodes.find((node) => node.op === op && node.head === head) ?? nodes.find((node) => node.op === op)
+    );
+  }
   function focus(op, layer = 0, head = 0) {
     if (!layout) return null;
     flight = null;
     const i = clamp(Math.trunc(layer) || 0, 0, Math.max(0, layout.layers.length - 1));
     const local = layerAt(i)?.nodes ?? [];
     const nodes = [...local, ...layout.root];
-    let n = nodes.find((n) => n.op === op && n.head === head) ?? nodes.find((n) => n.op === op);
+    let n = findNode(op, i, head);
     let packedOffset = 0;
     if (!n) {
       const packed = /^([qkv])(WeightBlock|Block)$/.exec(op);
@@ -483,6 +503,107 @@ export function mountTensorScene(
     redraw();
     return n;
   }
+  function frameComputation(animate) {
+    const start = pose();
+    const { phase } = computation;
+    const bounds = [phase.output, ...phase.sources].map((span) => {
+      const b = spanBounds(span);
+      // Include a few neighboring cells so a scalar still reads as a location
+      // within a tensor. A long reduction keeps its entire addressed axis.
+      const n = span.node,
+        full = box(n);
+      for (let i = 0; i < 3; i++) {
+        const pad = (6 * (full[i + 3] - full[i])) / n[dims[i]];
+        b[i] = Math.max(full[i], b[i] - pad);
+        b[i + 3] = Math.min(full[i + 3], b[i + 3] + pad);
+      }
+      return b;
+    });
+    const low = [0, 1, 2].map((i) => Math.min(...bounds.map((b) => b[i])));
+    const high = [0, 1, 2].map((i) => Math.max(...bounds.map((b) => b[i + 3])));
+    const origin = low.map((n, i) => (n + high[i]) / 2);
+    const v = cameraMap(basis(yaw, pitch), origin, 1, 0, 0);
+    const rects = bounds.map((b) => screenBox(b, v));
+    const x0 = Math.min(...rects.map((r) => r[0])),
+      x1 = Math.max(...rects.map((r) => r[2]));
+    const y0 = Math.min(...rects.map((r) => r[1])),
+      y1 = Math.max(...rects.map((r) => r[3]));
+    const insets = playbackInsets?.() ?? {};
+    const top = Math.min(insets.top ?? 95, height * 0.34);
+    const bottom = Math.min(insets.bottom ?? 145, height * 0.36);
+    scale = Math.min(
+      20 / layout.cell,
+      (width * 0.78) / Math.max(x1 - x0, layout.cell),
+      ((height - top - bottom) * 0.82) / Math.max(y1 - y0, layout.cell),
+    );
+    const vertical = (y0 + y1) / 2 - (top - bottom) / (2 * scale);
+    target = origin.map((n, i) => n + (v.right[i] * (x0 + x1)) / 2 + v.down[i] * vertical);
+    frameChange(start, { animate });
+  }
+  function prepareComputation(hit, { animate = true, refresh = false } = {}) {
+    if (!hit) return [];
+    const { node } = hit;
+    const phases = chapterSequence({
+      ...hit,
+      modelId: layout.id,
+      sample,
+      find: (op, l = node.layer, h = node.head) => findNode(op, l, h),
+      resolve: (id, l = node.layer) => lookup(id, l),
+    });
+    if (!phases.length) return phases;
+    const spans = phases.flatMap((phase) => [...phase.sources, phase.output]);
+    const nodes = [...new Map(spans.map((s) => [s.node.id, s.node])).values()];
+    const previous = computation;
+    const index = refresh && previous ? Math.max(0, previous.phases.indexOf(previous.phase)) : 0;
+    const phase = phases[index] ?? phases[0];
+    computation = {
+      nodes,
+      phases,
+      autoFrame: !refresh || previous?.autoFrame,
+      phase,
+      progress: refresh ? (previous?.progress ?? 0) : 0,
+    };
+    focal = node;
+    overviewMode = false;
+    returnToAtlas = true;
+    if (!refresh) {
+      slice = null;
+      // Only reset an edge-on view on entry. A manual orbit during the lesson
+      // survives a pause, a seek, and a new phase.
+      if (Math.cos(yaw) < 0.45 || Math.abs(pitch) > 0.65) resetOrientation();
+    }
+    // Loading NanoGPT's prefix may resolve a previously unknown embedding row.
+    // A refreshed number, on its own, need not interrupt an ongoing flight.
+    const geometryKey = (p) =>
+      [p.output, ...p.sources].map((s) => [s.node.id, ...s.indices, s.axis, s.length].join('/')).join('|');
+    if (
+      computation.autoFrame &&
+      (!refresh || !previous || geometryKey(previous.phase) !== geometryKey(phase))
+    ) {
+      frameComputation(animate);
+    }
+    redraw();
+    return phases;
+  }
+  function displayComputation(phase, progress, animate = false) {
+    if (!computation) return;
+    if (phase) {
+      const changed = computation.phase !== phase;
+      if (!changed && progress === computation.progress && !flight) return;
+      computation.phase = phase;
+      computation.progress = progress;
+      if (changed && computation.autoFrame) frameComputation(animate);
+      else if (!animate && flight) {
+        applyPose(flight.finish);
+        flight = null;
+        zoomNotice();
+      }
+    } else {
+      flight = null;
+      computation = null;
+    }
+    redraw();
+  }
   function activeNode(node) {
     if (!layout || !node) return null;
     const local = lookup(node.id, node.layer);
@@ -522,6 +643,7 @@ export function mountTensorScene(
   }
   function pan(dx, dy) {
     flight = null;
+    if (computation) computation.autoFrame = false;
     if (isWide() && (dx || dy)) returnToAtlas = false;
     const ax = makeView();
     target = target.map((value, i) => value - (dx * ax.right[i] + dy * ax.down[i]) / scale);
@@ -531,6 +653,7 @@ export function mountTensorScene(
   }
   function orbit(dx, dy) {
     flight = null;
+    if (computation) computation.autoFrame = false;
     const old = basis(yaw, pitch),
       model = placements.get(layout?.id);
     const holdSlots = model && isWide();
@@ -579,6 +702,7 @@ export function mountTensorScene(
   function zoomBy(factor, anchor = [width / 2, height / 2]) {
     if (!layout || !(factor > 0) || !Number.isFinite(factor)) return;
     flight = null;
+    if (computation) computation.autoFrame = false;
     const previous = scale,
       wasWide = isWide(),
       axes = basis(yaw, pitch);
@@ -589,6 +713,7 @@ export function mountTensorScene(
     target = target.map((n, i) => n + (dx * axes.right[i] + dy * axes.down[i]) * shift);
     if (scale > previous && scale >= baseline * 1.8) returnToAtlas = true;
     guideZoomOut(previous, axes);
+    if (computation && factor < 1 && isWide()) onExitComputation?.();
     if (!wasWide && isWide()) select(null, true);
     overviewMode = false;
     zoomNotice();
@@ -694,6 +819,7 @@ export function mountTensorScene(
     );
   }
   function views() {
+    if (computation) return [{ model: layout, v: makeView(), placement: null }];
     if (!placements.size) return [{ model: layout, v: makeView(), placement: null }];
     const g = globalView(),
       area = [0, 0, width, height],
@@ -714,6 +840,7 @@ export function mountTensorScene(
     onWorldLabels(markers);
   }
   function candidates(area, v, model) {
+    if (computation && model === layout) return computation.nodes;
     const found = [...model.root];
     for (const layer of model.layers) {
       if (intersects(screenBox(layer.bounds, v), area)) found.push(...layerAt(layer.index, model).nodes);
@@ -872,6 +999,35 @@ export function mountTensorScene(
     for (const item of stamped) top = Math.min(top, item.r[1]);
     return top;
   }
+  function drawComputation(view) {
+    const { phase, progress, nodes } = computation;
+    const spans = [phase.output, ...phase.sources];
+    const involved = new Set(spans.map((s) => s.node.id));
+    const area = [0, 0, width, height];
+    const visible = nodes
+      .map((n) => prepared(n, view, false))
+      .filter((item) => intersects(area, item.rect));
+    visible.sort((a, b) => compareDepth(a, b, view));
+    ctx.save();
+    for (const item of visible) {
+      const relevant = involved.has(item.node.id);
+      ctx.globalAlpha = relevant ? 0.64 : 0.17;
+      paintNode(ctx, item.node, view, { sample, cache: tiles, shape: layout.shape });
+    }
+    ctx.restore();
+    paintComputation(ctx, view, phase, progress, { sample });
+    if (labels) {
+      const used = [],
+        tagged = new Set();
+      for (const span of spans) {
+        if (tagged.has(span.node.id)) continue;
+        tagged.add(span.node.id);
+        const r = screenBox(spanBounds(span), view);
+        const x = clamp((r[0] + r[2]) / 2, 4, width - 4);
+        if (intersects(r, area)) tag(ctx, span.node.name, x, r[1] - 4, 14, area, used);
+      }
+    }
+  }
   function draw(time) {
     frame = 0;
     advanceFlight(time);
@@ -880,13 +1036,19 @@ export function mountTensorScene(
     ctx.fillRect(0, 0, width, height);
     if (!layout) return;
     const models = views(),
-      wide = isWide();
+      wide = !computation && isWide();
     if (flight) queuedPointer = null;
     if (queuedPointer && !pointers.size) {
       const hit = pickScene(...queuedPointer, models, wide);
       select(hit?.model || wide ? null : (hit?.cell ?? pinned));
       canvas.style.cursor = hit?.model ? 'pointer' : hit?.cell ? 'crosshair' : 'grab';
       queuedPointer = null;
+    }
+    if (computation) {
+      drawComputation(models[0].v);
+      publishMarkers([]);
+      inform();
+      return;
     }
     const markers = [];
     for (const info of models) {
@@ -910,7 +1072,8 @@ export function mountTensorScene(
     if (canvas.height !== Math.round(height * dpr)) canvas.height = Math.round(height * dpr);
     if (layout && (width !== oldW || height !== oldH)) {
       if (entries.length) placements = arrangeWorld(entries, width, height);
-      if (overviewMode === 'world') overview();
+      if (computation?.autoFrame) frameComputation(false);
+      else if (overviewMode === 'world') overview();
       else if (overviewMode === 'model') fitModel();
       else {
         baseline = placements.get(layout.id)?.unit ?? fit();
@@ -986,7 +1149,7 @@ export function mountTensorScene(
       pinchDistance = 0;
     }
     if (!p.moved && e.type === 'pointerup' && e.button === 0) {
-      const target = layout && pickScene(...local(e), views(), isWide());
+      const target = layout && pickScene(...local(e), views(), !computation && isWide());
       if (target?.model) {
         select(null, true);
         if (onModelPick) onModelPick(target.model);
@@ -1055,6 +1218,9 @@ export function mountTensorScene(
     setLayout,
     fitModel,
     overview,
+    findNode,
+    prepareComputation,
+    displayComputation,
     focus,
     focusCell,
     inspectCell,

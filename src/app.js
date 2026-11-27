@@ -4,12 +4,14 @@ import { inspectNano } from './nano.js?v=2';
 import { models, chapters, tabLabels, isGPT2, isModern } from './detail/catalog.js';
 import { classicLayout } from './detail/classic-layout.js';
 import { gpt2Values } from './detail/gpt2-values.js';
-import { mountTensorScene } from './detail/tensor-scene.js?v=3.1';
+import { mountTensorScene } from './detail/tensor-scene.js?v=4';
+import { chapterPlayback } from './detail/chapter-playback.js';
+import { phaseReadCount } from './detail/flow-paint.js';
 import { modernExample } from './detail/modern.js';
-import { mountReader } from './detail/reader.js';
+import { mountReader } from './detail/reader.js?v=4';
 import { createLocator } from './detail/locator.js';
 import { cellKey, readCell, placeTooltip } from './detail/inspector.js';
-import { messages, guideRows } from './detail/words.js?v=3';
+import { messages, guideRows } from './detail/words.js?v=4';
 
 const $ = (id) => document.getElementById(id);
 const params = () => new URL(location.href).searchParams;
@@ -47,12 +49,28 @@ let stage = 'norm',
   hover = null;
 let labelState = true,
   orbitMode = false,
-  playTimer = 0,
+  tourRunning = false,
   loadTimer = 0,
   readController = null,
   weightStatus = '',
   readKey = '';
 const releaseSamples = new Map();
+const motionPreference = window.matchMedia('(prefers-reduced-motion: reduce)');
+const player = $('motion-player');
+let motion = null;
+const playback = chapterPlayback({
+  onFrame: displayPlayback,
+  onComplete() {
+    if (!tourRunning) return;
+    const list = chapters(model.id);
+    const index = list.findIndex((ch) => ch.op === operation);
+    if (index >= 0 && index + 1 < list.length) goChapter(list[index + 1], true, { autoplay: true });
+    else {
+      tourRunning = false;
+      drawChapters();
+    }
+  },
+});
 let multipleModelsInView = false;
 const worldEntries = models.map(({ id, name }) => ({
   id,
@@ -100,6 +118,15 @@ const scene = mountTensorScene(canvas, {
   onCell: updateHover,
   onWorldLabels: placeWorldLabels,
   onModelPick: visitModel,
+  onExitComputation: stopTour,
+  playbackInsets() {
+    const bounds = canvas.getBoundingClientRect();
+    const tools = $('viewer').querySelector('.diagram-toolbar').getBoundingClientRect();
+    return {
+      top: tools.bottom - bounds.top + 19,
+      bottom: bounds.bottom - player.getBoundingClientRect().top + 18,
+    };
+  },
   onOverview() {
     stopTour();
     showOverview('all');
@@ -145,7 +172,7 @@ function cancelRead() {
   readKey = '';
 }
 function refreshTip() {
-  if (!hover || !model) {
+  if (!hover || !model || (motion && motion.status !== 'ended' && cellKey(hover) === cellKey(pinned))) {
     tip.hidden = true;
     leader.hidden = true;
     return;
@@ -186,6 +213,7 @@ function updateHover(hit) {
       if (controller.signal.aborted || source !== sample || key !== cellKey(hover)) return;
       weightStatus = value == null ? t('此权重未映射', 'Weight unavailable') : '';
       scene.refreshValues();
+      refreshPlayback();
     } catch {
       if (controller.signal.aborted || source !== sample || key !== cellKey(hover)) return;
       weightStatus = t('未能取得权重 · 移开后再悬停可重试', 'Weight unavailable · hover again to retry');
@@ -228,6 +256,7 @@ async function updatePrefix(next) {
   sample = null;
   samplePrefix = '';
   scene.setValues(null);
+  refreshPlayback();
   drawCaption();
   try {
     const data = await inspectNano(next);
@@ -235,6 +264,7 @@ async function updatePrefix(next) {
     sample = data;
     samplePrefix = next;
     scene.setValues(sample);
+    refreshPlayback();
     drawCaption();
     drawPinned();
     // Preserve the prefix of a shared or pinned measurement when the experiment advances.
@@ -353,14 +383,62 @@ function drawSources() {
 }
 function drawChapters() {
   if (!model) return;
-  reader.render(model, { stage, operation, mode, lang, playing: Boolean(playTimer) });
+  reader.render(model, { stage, operation, mode, lang, playing: tourRunning });
   $('fit').setAttribute('aria-pressed', String(mode === 'all'));
 }
 function stopTour() {
-  if (!playTimer) return;
-  clearInterval(playTimer);
-  playTimer = 0;
+  if (!motion && !tourRunning) return;
+  tourRunning = false;
+  playback.start([], false);
   drawChapters();
+}
+function pausePlayback() {
+  tourRunning = false;
+  playback.pause();
+  drawChapters();
+}
+function displayPlayback(next) {
+  const previous = motion;
+  motion = next;
+  player.hidden = !next;
+  if (!next) {
+    scene.displayComputation(null);
+    refreshTip();
+    return;
+  }
+  const { phase, index, count, progress, position, status } = next;
+  const visibleProgress = motionPreference.matches ? 1 : progress;
+  if (previous?.phase !== phase || player.lang !== lang) {
+    player.lang = lang;
+    $('motion-count').textContent = index + 1 + ' / ' + count;
+    $('motion-title').textContent = phase.title[lang];
+    $('motion-seek').setAttribute('aria-valuetext', index + 1 + ' / ' + count + ' · ' + phase.title[lang]);
+    $('motion-prev').disabled = index === 0;
+    $('motion-next').disabled = index === count - 1;
+  }
+  const visited = phase.readout && phaseReadCount(phase, visibleProgress);
+  const formula = visited > 0 && visited < phase.readoutLength ? phase.readout(visited) : phase.formula;
+  if ($('motion-formula').textContent !== formula) $('motion-formula').textContent = formula;
+  const label =
+    status === 'playing'
+      ? t('暂停本节动画', 'Pause animation')
+      : status === 'ended'
+        ? t('重播本节动画', 'Replay animation')
+        : t('播放本节动画', 'Play animation');
+  const toggle = $('motion-toggle');
+  if (toggle.title !== label) {
+    toggle.title = label;
+    toggle.setAttribute('aria-label', label);
+    toggle.innerHTML = icon(status === 'playing' ? 'pause' : status === 'ended' ? 'reset' : 'play');
+  }
+  if (player.dataset.state !== status) player.dataset.state = status;
+  $('motion-seek').value = Math.round((1000 * position) / count);
+  scene.displayComputation(phase, visibleProgress, status === 'playing');
+  if (!previous || previous.status !== status) refreshTip();
+}
+function refreshPlayback() {
+  if (!motion || !pinned) return;
+  playback.refresh(scene.prepareComputation(pinned, { animate: false, refresh: true }));
 }
 function preferred(op) {
   if (model.id === 'qwen') {
@@ -369,17 +447,32 @@ function preferred(op) {
   }
   return layer;
 }
-function goChapter(ch, save = true) {
+function goChapter(
+  ch,
+  save = true,
+  { autoplay = !motionPreference.matches, cell = null, animate = true } = {},
+) {
+  if (!ch) return;
   mode = 'detail';
   stage = ch.stage;
   operation = ch.op;
-  const n = scene.focus(operation, preferred(operation), head);
+  const n = cell?.node.op === ch.op ? cell.node : scene.findNode(operation, preferred(operation), head);
   if (!n) return;
   layer = n.layer < 0 ? layer : n.layer;
-  const x = n.cx > 1 ? Math.min(4, n.cx - 1) : 0,
-    y = n.cy > 1 ? Math.min(n.op === 'attnMtxSm' ? 5 : 11, n.cy - 1) : 0;
-  const hit = scene.inspectCell(n, x, y, 0);
-  if (hit) pin(hit, save);
+  const tMax = model.id === 'nanogpt' ? prefix.length - 1 : Infinity;
+  const x = cell?.x ?? Math.min(4, n.cx - 1, n.axes[0] === 'T' ? tMax : Infinity);
+  const y = cell?.y ?? Math.min(n.op === 'attnMtxSm' ? Math.min(5, tMax) : 11, n.cy - 1);
+  const z = cell?.z ?? (n.op === 'deltaState' ? Math.min(2, n.cz - 1) : 0);
+  const hit = scene.inspectCell(n, x, y, z);
+  if (!hit) return;
+  pin(hit, save);
+  player.hidden = false;
+  const phases = scene.prepareComputation(hit, { animate });
+  playback.start(phases, autoplay);
+  if (!phases.length) {
+    scene.focus(n.op, n.layer, n.head);
+    scene.inspectCell(n, x, y, z);
+  }
 }
 function showOverview(view, save = true, animate = save) {
   if (!layout) return;
@@ -480,6 +573,8 @@ function chooseModel(id, route = null, save = false) {
   if (openWorld) showOverview('all', false, save);
   else if (route?.get('view') === 'network' || (!addressed && (isGPT2(next.id) || next.id === 'gpt3'))) {
     showOverview('overview', false, save);
+  } else if (route?.has('stage') && !route.has('tensor') && route.get('view') !== 'cell') {
+    goChapter(chapter, false, { animate: false });
   } else {
     const op = route?.get('tensor') || chapter.op;
     const node = scene.focus(op, preferred(op), head);
@@ -547,19 +642,54 @@ $('world-labels').addEventListener('click', (event) => {
 });
 $('play').addEventListener('click', () => {
   if (!layout) return;
-  if (playTimer) {
-    stopTour();
+  if (tourRunning) {
+    pausePlayback();
     return;
   }
   const list = chapters(model.id);
-  let current = list.findIndex((ch) => ch.op === operation);
-  if (current < 0 || current === list.length - 1) current = 0;
-  goChapter(list[current]);
-  playTimer = setInterval(() => {
-    goChapter(list[++current]);
-    if (current === list.length - 1) stopTour();
-  }, 5000);
+  tourRunning = true;
+  if (motion && motion.status !== 'ended') playback.play();
+  else {
+    let current = mode === 'all' || mode === 'overview' ? 0 : list.findIndex((ch) => ch.op === operation);
+    if (current < 0 || (current === list.length - 1 && motion?.status === 'ended')) current = 0;
+    goChapter(list[current], true, {
+      autoplay: true,
+      cell: pinned?.node.op === list[current].op ? pinned : null,
+    });
+  }
   drawChapters();
+});
+$('lesson-demo').addEventListener('click', () => {
+  const ch =
+    chapters(model.id).find((c) => c.op === operation) || chapters(model.id).find((c) => c.stage === stage);
+  const cell = pinned?.node.op === ch?.op ? pinned : null;
+  stopTour();
+  goChapter(ch, true, { autoplay: true, cell });
+});
+$('motion-toggle').addEventListener('click', () => {
+  if (motion?.status === 'playing') pausePlayback();
+  else playback.play();
+});
+function seekMotion(position) {
+  tourRunning = false;
+  playback.seek(position);
+  drawChapters();
+}
+$('motion-seek').addEventListener('input', (event) => {
+  if (motion) seekMotion((Number(event.target.value) * motion.count) / 1000);
+});
+function stepMotion(direction) {
+  if (motion) seekMotion(Math.max(0, Math.min(motion.count - 1, motion.index + direction)) + 0.88);
+}
+$('motion-prev').addEventListener('click', () => stepMotion(-1));
+$('motion-next').addEventListener('click', () => stepMotion(1));
+$('motion-close').addEventListener('click', () => {
+  stopTour();
+  if (pinned) {
+    scene.focus(pinned.node.op, Math.max(0, pinned.node.layer), Math.max(0, pinned.node.head));
+    scene.inspectCell(pinned.node, pinned.x, pinned.y, pinned.z);
+  }
+  canvas.focus({ preventScroll: true });
 });
 $('fit').addEventListener('click', () => {
   stopTour();
@@ -579,11 +709,13 @@ $('detail').addEventListener('click', () => {
 $('cell-zoom').addEventListener('click', () => {
   stopTour();
   if (!layout) return;
-  if (!pinned && !hover)
+  if (!pinned && !hover) {
     goChapter(
       chapters(model.id).find((ch) => ch.stage === (model.id === 'qwen' ? 'delta' : 'norm')),
       false,
     );
+    stopTour();
+  }
   mode = 'cell';
   const hit = scene.centerCell();
   if (hit) pin(hit);
@@ -606,6 +738,7 @@ $('rotate').addEventListener('click', () => {
 });
 $('return-cell').addEventListener('click', () => {
   if (!pinned) return;
+  stopTour();
   const h = pinned;
   mode = 'cell';
   reader.revealScene();
@@ -625,6 +758,7 @@ $('language').addEventListener('click', () => {
     locator.set(layout, lang);
     lab.show(model.id, lang, stage);
     drawPinned();
+    if (motion) displayPlayback(playback.state);
     refreshTip();
     writeURL();
   }
@@ -635,12 +769,31 @@ $('show-guide').addEventListener('click', () => {
 });
 $('close-guide').addEventListener('click', () => $('guide-dialog').close());
 document.addEventListener('keydown', (event) => {
+  if (
+    event.key === ' ' &&
+    motion &&
+    !event.target.closest?.(
+      'button,input,select,a,textarea,dialog,[role="button"],[contenteditable="true"]',
+    )
+  ) {
+    event.preventDefault();
+    if (!event.repeat) {
+      if (motion.status === 'playing') pausePlayback();
+      else playback.play();
+    }
+    return;
+  }
   if (event.key !== 'Escape') return;
   if (!$('locator').hidden) locator.close(true);
   else if ($('viewer').classList.contains('theater')) theater(false);
 });
 document.addEventListener('visibilitychange', () => {
-  if (document.hidden) stopTour();
+  if (document.hidden && motion) pausePlayback();
+});
+motionPreference.addEventListener('change', () => {
+  if (!motion) return;
+  if (motionPreference.matches) pausePlayback();
+  displayPlayback(playback.state);
 });
 document.addEventListener(
   'keydown',
