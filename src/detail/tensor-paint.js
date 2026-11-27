@@ -8,6 +8,7 @@ export const palette = {
 export const clamp = (n, lo, hi) => Math.max(lo, Math.min(hi, n));
 export const center = (n) => [n.x + n.dx / 2, n.y + n.dy / 2, n.z + n.dz / 2];
 export const box = (n) => [n.x, n.y, n.z, n.x + n.dx, n.y + n.dy, n.z + n.dz];
+const distantInk = { w: [77, 76, 155], i: [58, 113, 81], a: [151, 119, 58] };
 const pointKeys = ['x', 'y', 'z'],
   lengths = ['dx', 'dy', 'dz'],
   counts = ['cx', 'cy', 'cz'];
@@ -244,14 +245,16 @@ export function paintNode(
   ctx,
   n,
   view,
-  { sample = null, cache, shape, selected, dependency, flat = false } = {},
+  { sample = null, cache, shape, selected, dependency, flat = false, roleTint = 0 } = {},
 ) {
   const faces = planes(n, view);
   for (const f of faces) {
     const tone = palette[n.kind],
       shade = f.normal === 2 ? 1 : f.normal === 1 ? 1.14 : 0.78;
     rect(ctx, f, 0, 0, f.nu, f.nv);
-    ctx.fillStyle = rgb(tone.front.map((a) => Math.round(a * shade)));
+    ctx.fillStyle = rgb(
+      tone.front.map((a, i) => Math.round((a + roleTint * (distantInk[n.kind][i] - a)) * shade)),
+    );
     ctx.fill();
     if (flat) continue;
     const perp = Math.min(Math.abs(f.det) / Math.hypot(...f.du), Math.abs(f.det) / Math.hypot(...f.dv));

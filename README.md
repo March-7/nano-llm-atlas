@@ -1,8 +1,10 @@
 # Tensor Atlas · 语言模型三维计算图
 
-在三维图中悬停一格，即可读取它的索引、形状、数值来源与计算公式。默认视图定位到 NanoGPT 第一层的第二个 LayerNorm，选中位置为 `t=4, c=11`。移动到旁边的格子，可以看见数值、公式代入和数据依赖随坐标改变。[在线探索](https://march-7.github.io/nano-llm-atlas/) · [English](https://march-7.github.io/nano-llm-atlas/?lang=en)
+打开首页即可在同一片三维画布中看到六个模型。桌面左栏给出模型流程图、章节目录、实验与来源；右栏可以从全览聚焦到整模、张量或单个权重。模型在总览中分别等比缩放，每个名称下都标出了原模型参数量。[打开六模型全览](https://march-7.github.io/nano-llm-atlas/?view=all&lang=zh) · [English](https://march-7.github.io/nano-llm-atlas/?view=all&lang=en)
 
-[![NanoGPT 权重矩阵、残差和 LayerNorm 单元的坐标、公式与真实计算结果](docs/nanogpt-cell.webp)](https://march-7.github.io/nano-llm-atlas/?model=nanogpt&tensor=ln2.lnResid&layer=1&x=4&y=11&lang=zh)
+[![左侧章节导览与右侧六模型共享三维场景](docs/model-atlas.webp)](https://march-7.github.io/nano-llm-atlas/?view=all&lang=zh)
+
+点开 NanoGPT 的第二个 LayerNorm，可以逐格对照坐标、公式、数值与依赖。[进入 t=4, c=11](https://march-7.github.io/nano-llm-atlas/?model=nanogpt&tensor=ln2.lnResid&layer=1&x=4&y=11&lang=zh) · [查看单元截图](docs/nanogpt-cell.webp)
 
 ## 六个模型
 
@@ -19,14 +21,16 @@
 
 ## 从整网到一个标量
 
-- 点顶部模型名切换模型。**全网**显示所有层，**局部**显示选中张量及相邻构件，**单格**进一步放大。拖动平移，Shift 或右键拖动旋转，滚轮或双指缩放。
-- 鼠标悬停读取数值，点击或触屏点按可固定。**定位张量**允许选择解码层、头、张量与坐标，包括 Qwen 状态的内部时间切片。固定后可复制地址栏分享。[示例：第 2 层 MLP 权重](https://march-7.github.io/nano-llm-atlas/?model=nanogpt&tensor=mlpFcWeight&layer=2&x=21&y=17&view=cell)
-- 修改下方排序实验的 A/B/C 输入或生成下一个字母，NanoGPT 图中的激活会同步更新。未来位置显示为尚未输入，因果掩码明确区分原始分数的 `−∞` 和 Softmax 后的 `0`。
+- **全览**把六个模型放入同一视野。点击图中的模型、名称标签或顶部的模型名，镜头会移到该模型。滚轮缩远即可重新看到相邻模型。左图和章节目录均可定位到右侧相应的张量。
+- **按住鼠标滚轮（中键）并拖动**旋转观察方向。全览中六个模型共用竖直轴并保持各自的展位。左键拖动平移，滚动滚轮只改变缩放。[缩远后中键旋转的实测画面](docs/orbit-check.webp)
+- 触屏支持双指缩放和旋转模式。手机上的**导览**可展开阅读区，同时保留画布。
+- **局部**框选张量及其相邻构件，**单格**放大一个标量。悬停或点按会出现半透明的数值浮层。也可通过**定位张量**选择解码层、头与坐标，包含 Qwen 的递归状态时间切片。[示例：第 2 层 MLP 权重](https://march-7.github.io/nano-llm-atlas/?model=nanogpt&tensor=mlpFcWeight&layer=2&x=21&y=17&view=cell)
+- 修改导览里的 A/B/C 输入或生成下一个字母，右侧 NanoGPT 的激活会同步更新。未来位置显示为尚未输入，因果掩码区分原始分数的 `−∞` 与 Softmax 后的 `0`。
 - GPT-2 按需从 Hugging Face 的固定版本读取 Safetensors 索引和最多 4 KiB 的数据页。权重页保存在浏览器内存中。每次读取均校验 HTTP `206` 和 `Content-Range`。[Small 检查点版本](https://huggingface.co/openai-community/gpt2/tree/607a30d783dfa663caf39e06633721c8d4cfcd7e) · [XL 检查点版本](https://huggingface.co/openai-community/gpt2-xl/tree/15ea56dee5df4983c59b2538573817e1667135e2)
 
 ## 参考源码
 
-经典模型几何改编自 Brendan Bycroft 的开源 LLM Visualization，并保留其 MIT 声明。本站将布局、三维投影与单元命中、数值读取和 HTML 公式浮层分开实现。按层复用几何模板、裁剪视口并依据缩放级别绘制网格，因此 GPT-3 的全网视图也能进入指定头的一格。[原站](https://bbycroft.net/llm) · [上游许可](assets/gpt-nano-sort-LICENSE.txt)
+经典模型几何改编自 Brendan Bycroft 的开源 LLM Visualization，并保留其 MIT 声明。本站将布局、三维投影与单元命中、数值读取和 HTML 公式浮层分开实现。按层复用几何模板、裁剪视口并依据缩放级别绘制网格，因此 GPT-3 的整模视图也能进入指定头的一格。[原站](https://bbycroft.net/llm) · [上游许可](assets/gpt-nano-sort-LICENSE.txt)
 
 | 原站代码 | 对应功能 |
 | --- | --- |

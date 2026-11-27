@@ -1,4 +1,13 @@
 import {
+  arrangeWorld,
+  localView,
+  overviewPitch,
+  overviewYaw,
+  toLocal,
+  toWorld,
+  worldInsets,
+} from './atlas-world.js?v=3.1';
+import {
   TileCache,
   basis,
   box,
@@ -14,10 +23,10 @@ import {
   pickFace,
   planes,
   screenBox,
-} from './tensor-paint.js';
+} from './tensor-paint.js?v=3.1';
 
-const HOME_YAW = 0.34,
-  HOME_PITCH = 0.22;
+const HOME_YAW = overviewYaw,
+  HOME_PITCH = overviewPitch;
 const dims = ['cx', 'cy', 'cz'];
 const colors = { w: '#5652b9', i: '#47944f', a: '#b08e26' };
 
@@ -141,7 +150,10 @@ function compareDepth(a, b, view) {
  * synchronously notify onCell. Camera changes refresh screen coordinates on
  * the next frame. onPick only fires for a direct click or tap on a tensor.
  */
-export function mountTensorScene(canvas, { onCell, onPick, onZoom } = {}) {
+export function mountTensorScene(
+  canvas,
+  { onCell, onPick, onZoom, onModelPick, onWorldLabels, onOverview } = {},
+) {
   const ctx = canvas.getContext('2d');
   const events = new AbortController(),
     { signal } = events;
@@ -159,15 +171,19 @@ export function mountTensorScene(canvas, { onCell, onPick, onZoom } = {}) {
   let labels = true,
     overviewMode = false,
     interaction = 'pan',
-    stamp = null,
     focal = null;
   let active = null,
     pinned = null,
     slice = null,
     lastSent = '',
     queuedPointer = null;
-  const layers = new Map(),
-    root = new Map(),
+  let entries = [],
+    placements = new Map(),
+    lastMarkers = '',
+    returnToAtlas = true,
+    flight = null;
+  const reducedMotion = window.matchMedia('(prefers-reduced-motion: reduce)');
+  const stores = new WeakMap(),
     tiles = new TileCache(),
     pointers = new Map();
   let pinchMid = null,
@@ -178,9 +194,29 @@ export function mountTensorScene(canvas, { onCell, onPick, onZoom } = {}) {
     if (!frame && !signal.aborted) frame = requestAnimationFrame(draw);
   };
   const zoomNotice = () => onZoom?.(scale / Math.max(baseline, 1e-12));
-  function layerAt(i) {
+  function storeFor(model) {
+    if (!stores.has(model))
+      stores.set(model, {
+        layers: new Map(),
+        root: new Map(model.root.map((n) => [n.id, n])),
+        stamp: null,
+      });
+    return stores.get(model);
+  }
+  function globalView() {
+    const current = placements.get(layout?.id);
+    if (!current) return makeView();
+    const axes = basis(yaw, pitch);
+    return cameraMap(axes, toWorld(current, target, axes), scale / current.unit, width, height);
+  }
+  function isWide() {
+    const current = placements.get(layout?.id);
+    return !!current && scale / current.unit <= 1.85;
+  }
+  function layerAt(i, model = layout) {
+    const { layers } = storeFor(model);
     if (layers.has(i)) return layers.get(i);
-    const data = layout?.layers[i];
+    const data = model.layers[i];
     if (!data) return null;
     const nodes = typeof data.nodes === 'function' ? data.nodes() : data.nodes;
     const batch = { nodes, map: new Map(nodes.map((n) => [n.id, n])) };
@@ -189,14 +225,16 @@ export function mountTensorScene(canvas, { onCell, onPick, onZoom } = {}) {
     layers.set(i, batch);
     return batch;
   }
-  function lookup(id, layerIndex) {
+  function lookup(id, layerIndex, model = layout) {
+    const { root } = storeFor(model);
     if (root.has(id)) return root.get(id);
     if (layerIndex >= 0) {
-      const local = layerAt(layerIndex)?.map.get(id);
+      const local = layerAt(layerIndex, model)?.map.get(id);
       if (local) return local;
     }
-    if (layerIndex > 0) return layerAt(layerIndex - 1)?.map.get(id);
-    if (layerIndex === -1 && layout.layers.length) return layerAt(layout.layers.length - 1)?.map.get(id);
+    if (layerIndex > 0) return layerAt(layerIndex - 1, model)?.map.get(id);
+    if (layerIndex === -1 && model.layers.length)
+      return layerAt(model.layers.length - 1, model)?.map.get(id);
     return undefined;
   }
   function fit() {
@@ -239,34 +277,154 @@ export function mountTensorScene(canvas, { onCell, onPick, onZoom } = {}) {
       redraw();
     return inform(force);
   }
+  function pose() {
+    return { target: [...target], scale, yaw, pitch };
+  }
+  function applyPose(p) {
+    target = p.target;
+    scale = p.scale;
+    yaw = p.yaw;
+    pitch = p.pitch;
+  }
+  function frameChange(start, options) {
+    const finish = pose();
+    queuedPointer = null;
+    flight = null;
+    const ratio = Math.max(start.scale, finish.scale) / Math.min(start.scale, finish.scale);
+    const travel =
+      (Math.hypot(...target.map((v, i) => v - start.target[i])) * Math.sqrt(start.scale * finish.scale)) /
+      Math.max(width, height, 1);
+    const yawDelta = Math.atan2(Math.sin(finish.yaw - start.yaw), Math.cos(finish.yaw - start.yaw));
+    const angular = Math.abs(yawDelta) + Math.abs(finish.pitch - start.pitch);
+    if (
+      options?.animate &&
+      !reducedMotion.matches &&
+      ratio < 48 &&
+      travel < 9 &&
+      (ratio > 1.005 || travel > 0.005 || angular > 0.005)
+    ) {
+      flight = {
+        start,
+        finish,
+        yawDelta,
+        began: performance.now(),
+        duration: clamp(325 + 44 * Math.log(ratio) + 34 * travel, 325, 510),
+        pullback: Math.min(0.72, Math.log1p(Math.max(0, travel - 0.5) * 0.52)),
+      };
+      applyPose(start);
+    }
+    zoomNotice();
+    redraw();
+  }
+  function advanceFlight(time) {
+    if (!flight) return;
+    const { start, finish, yawDelta, duration, began, pullback } = flight;
+    const t = reducedMotion.matches ? 1 : clamp((time - began) / duration, 0, 1);
+    if (t === 1) {
+      applyPose(finish);
+      flight = null;
+    } else {
+      const u = t * t * (3 - 2 * t);
+      target = start.target.map((v, i) => v + (finish.target[i] - v) * u);
+      scale = Math.exp(
+        (1 - u) * Math.log(start.scale) +
+          u * Math.log(finish.scale) -
+          pullback * Math.sin(Math.PI * u) ** 2,
+      );
+      yaw = start.yaw + yawDelta * u;
+      pitch = start.pitch + (finish.pitch - start.pitch) * u;
+      redraw();
+    }
+    zoomNotice();
+  }
   function resetOrientation() {
     yaw = HOME_YAW;
     pitch = HOME_PITCH;
   }
-  function overview() {
+  function fitModel(options) {
     if (!layout) return;
+    const start = pose();
+    returnToAtlas = true;
     resetOrientation();
     const b = layout.bounds;
-    target = [(b[0] + b[3]) / 2, (b[1] + b[4]) / 2, (b[2] + b[5]) / 2];
-    scale = baseline = fit();
-    overviewMode = true;
+    target = [0, 1, 2].map((i) => (b[i] + b[i + 3]) / 2);
+    const model = placements.get(layout.id);
+    if (model) {
+      const pad = worldInsets(width, height);
+      const v = cameraMap(makeView(), target, 1, width, height);
+      const r = screenBox(b, v);
+      scale = Math.min(
+        (width - 2 * pad.side) / Math.max(1, r[2] - r[0]),
+        (height - pad.top - pad.bottom) / Math.max(1, r[3] - r[1]),
+      );
+      target = target.map((val, k) => val - (v.down[k] * (pad.top - pad.bottom)) / (2 * scale));
+      baseline = model.unit;
+    } else scale = baseline = fit();
+    overviewMode = 'model';
     focal = null;
     select(null, true);
-    zoomNotice();
-    redraw();
+    frameChange(start, options);
+  }
+  function overview(options) {
+    if (!layout) return;
+    const model = placements.get(layout.id);
+    if (!model) {
+      fitModel(options);
+      return;
+    }
+    const start = pose();
+    resetOrientation();
+    returnToAtlas = true;
+    target = toLocal(model, [0, 0, 0], basis(yaw, pitch));
+    scale = baseline = model.unit;
+    overviewMode = 'world';
+    focal = null;
+    select(null, true);
+    frameChange(start, options);
   }
   function setLayout(next) {
+    if (!next) return;
+    flight = null;
+    const prior = layout && placements.has(layout.id) ? globalView() : null;
+    if (layout !== next) {
+      sample = null;
+      tiles.clear();
+    }
+    if (placements.has(next.id) && placements.get(next.id).layout !== next) {
+      entries = entries.map((entry) => (entry.id === next.id ? { ...entry, layout: next } : entry));
+      placements = arrangeWorld(entries, width, height);
+    }
     layout = next;
-    sample = null;
-    tiles.clear();
-    layers.clear();
-    root.clear();
-    stamp = null;
-    for (const n of layout.root) root.set(n.id, n);
+    focal = null;
+    queuedPointer = null;
+    select(null, true);
+    const model = placements.get(next.id);
+    if (!model) {
+      fitModel();
+      return;
+    }
+    baseline = model.unit;
+    if (prior) {
+      target = toLocal(model, prior.target, prior);
+      scale = prior.scale * model.unit;
+      zoomNotice();
+      redraw();
+    } else overview();
+  }
+  function setWorld(next) {
+    entries = Array.from(next);
+    placements = arrangeWorld(entries, width, height);
+    if (!entries.length) {
+      publishMarkers([]);
+      if (layout) fitModel();
+      return;
+    }
+    if (!placements.has(layout?.id)) setLayout(entries[0].layout);
     overview();
   }
   function focus(op, layer = 0, head = 0) {
     if (!layout) return null;
+    flight = null;
     const i = clamp(Math.trunc(layer) || 0, 0, Math.max(0, layout.layers.length - 1));
     const local = layerAt(i)?.nodes ?? [];
     const nodes = [...local, ...layout.root];
@@ -297,6 +455,7 @@ export function mountTensorScene(canvas, { onCell, onPick, onZoom } = {}) {
     }
     if (!n) return null;
     resetOrientation();
+    returnToAtlas = true;
     select(null, true);
     overviewMode = false;
     focal = n;
@@ -316,7 +475,7 @@ export function mountTensorScene(canvas, { onCell, onPick, onZoom } = {}) {
       );
     }
     if (op === 'ln2.lnResid' && n.cx < 300) {
-      const ax = basis(yaw, pitch);
+      const ax = makeView();
       const shift = ((width < 550 ? 0.16 : 0.075) * width) / scale;
       target = target.map((v, k) => v - shift * ax.right[k]);
     }
@@ -324,7 +483,14 @@ export function mountTensorScene(canvas, { onCell, onPick, onZoom } = {}) {
     redraw();
     return n;
   }
+  function activeNode(node) {
+    if (!layout || !node) return null;
+    const local = lookup(node.id, node.layer);
+    return local && local.cx === node.cx && local.cy === node.cy && local.cz === node.cz ? local : null;
+  }
   function inspectCell(node, x, y, z) {
+    flight = null;
+    node = activeNode(node);
     if (!node) return null;
     const indices = [x, y, z].map((v, i) => clamp(Math.floor(v) || 0, 0, node[dims[i]] - 1));
     if (slice?.id === node.id && slice.z !== indices[2]) {
@@ -334,7 +500,11 @@ export function mountTensorScene(canvas, { onCell, onPick, onZoom } = {}) {
     return select({ node, x: indices[0], y: indices[1], z: indices[2] }, true, true);
   }
   function focusCell(node, x, y, z) {
-    if (!layout || !node) return null;
+    flight = null;
+    node = activeNode(node);
+    if (!node) return null;
+    if (overviewMode || isWide()) resetOrientation();
+    returnToAtlas = true;
     const idx = [x, y, z].map((v, i) => clamp(Math.floor(v) || 0, 0, node[dims[i]] - 1));
     target = cellPoint(node, ...idx);
     focal = node;
@@ -351,28 +521,75 @@ export function mountTensorScene(canvas, { onCell, onPick, onZoom } = {}) {
     return n ? focusCell(n, Math.floor(n.cx / 2), Math.floor(n.cy / 2), Math.floor(n.cz / 2)) : null;
   }
   function pan(dx, dy) {
-    const ax = basis(yaw, pitch);
+    flight = null;
+    if (isWide() && (dx || dy)) returnToAtlas = false;
+    const ax = makeView();
     target = target.map((value, i) => value - (dx * ax.right[i] + dy * ax.down[i]) / scale);
     overviewMode = false;
     queuedPointer = null;
     redraw();
   }
   function orbit(dx, dy) {
-    yaw -= dx * 0.006;
+    flight = null;
+    const old = basis(yaw, pitch),
+      model = placements.get(layout?.id);
+    const holdSlots = model && isWide();
+    yaw = (yaw - dx * 0.006) % (Math.PI * 2);
     pitch = clamp(pitch + dy * 0.005, -1.34, 1.34);
+    if (holdSlots) {
+      // The observer may have arrived from any model or panned manually.
+      // Preserve that exact projected pan while all volumes rotate in place.
+      const next = basis(yaw, pitch);
+      const offset = target.map((n, i) => n - model.localCenter[i]);
+      const u = dot(offset, old.right),
+        v = dot(offset, old.down),
+        d = dot(offset, old.eye);
+      target = model.localCenter.map((n, i) => n + u * next.right[i] + v * next.down[i] + d * next.eye[i]);
+    }
     overviewMode = false;
     queuedPointer = null;
     redraw();
   }
+
+  function guideZoomOut(previous, axes) {
+    const model = placements.get(layout.id);
+    if (!model || !returnToAtlas || scale >= previous) return;
+    const ratio = scale / baseline,
+      oldRatio = previous / baseline;
+    if (ratio >= 1.8) return;
+    const progress = (r) => {
+      const t = clamp((1.8 - r) / 0.8, 0, 1);
+      return t * t * (3 - 2 * t);
+    };
+    const p = progress(ratio),
+      old = progress(oldRatio);
+    const amount = old >= 1 ? 1 : clamp((p - old) / (1 - old), 0, 1);
+    const point = toWorld(model, target, axes),
+      u = dot(point, axes.right),
+      v = dot(point, axes.down);
+    const free = Math.max(0, 1 / ratio - 1),
+      pad = worldInsets(width, height);
+    const freeX = free * Math.max(0, width / 2 - pad.side - 65);
+    const freeAbove = free * Math.max(0, height / 2 - pad.top - 40);
+    const freeBelow = free * Math.max(0, height / 2 - pad.bottom - 8);
+    const du = (clamp(u, -freeX, freeX) - u) * amount;
+    const dv = (clamp(v, -freeBelow, freeAbove) - v) * amount;
+    target = target.map((n, i) => n + (du * axes.right[i] + dv * axes.down[i]) / model.unit);
+  }
   function zoomBy(factor, anchor = [width / 2, height / 2]) {
     if (!layout || !(factor > 0) || !Number.isFinite(factor)) return;
-    const previous = scale;
+    flight = null;
+    const previous = scale,
+      wasWide = isWide(),
+      axes = basis(yaw, pitch);
+    const dx = anchor[0] - width / 2,
+      dy = anchor[1] - height / 2;
     scale = clamp(scale * factor, baseline * 0.28, Math.max(80 / layout.cell, baseline * 2));
-    const ax = basis(yaw, pitch),
-      shift = 1 / previous - 1 / scale;
-    target = target.map(
-      (v, i) => v + shift * ((anchor[0] - width / 2) * ax.right[i] + (anchor[1] - height / 2) * ax.down[i]),
-    );
+    const shift = 1 / previous - 1 / scale;
+    target = target.map((n, i) => n + (dx * axes.right[i] + dy * axes.down[i]) * shift);
+    if (scale > previous && scale >= baseline * 1.8) returnToAtlas = true;
+    guideZoomOut(previous, axes);
+    if (!wasWide && isWide()) select(null, true);
     overviewMode = false;
     zoomNotice();
     redraw();
@@ -383,20 +600,21 @@ export function mountTensorScene(canvas, { onCell, onPick, onZoom } = {}) {
     const depth = n.dz / n.cz;
     return { ...n, z: n.z + slice.z * depth, dz: depth, cz: 1, sliceZ: slice.z, whole: n };
   }
-  function prepared(raw, v) {
-    const n = displayed(raw),
+  function prepared(raw, v, allowSlice = true) {
+    const n = allowSlice ? displayed(raw) : raw,
       b = box(n);
     return { node: n, box: b, rect: screenBox(b, v), depth: dot(center(n), v.eye) };
   }
-  function sceneStamp(v, layerRect) {
-    const first = layout.layers[0];
+  function sceneStamp(model, v, layerRect, roleTint) {
+    const cache = storeFor(model);
+    const first = model.layers[0];
     const fw = layerRect[2] - layerRect[0],
       fh = layerRect[3] - layerRect[1];
     const density = Math.min(dpr, 620 / Math.max(1, fw, fh));
     const w = Math.max(4, Math.ceil(fw * density) + 2),
       h = Math.max(4, Math.ceil(fh * density) + 2);
     const signature = [yaw.toFixed(5), pitch.toFixed(5), w, h, v.scale.toPrecision(5)].join('/');
-    if (stamp?.signature === signature) return stamp;
+    if (cache.stamp?.signature === signature) return cache.stamp;
     const bitmap = document.createElement('canvas');
     bitmap.width = w;
     bitmap.height = h;
@@ -410,12 +628,12 @@ export function mountTensorScene(canvas, { onCell, onPick, onZoom } = {}) {
       w,
       h,
     );
-    const nodes = layerAt(0)
-      .nodes.map((n) => prepared(n, small))
+    const nodes = layerAt(0, model)
+      .nodes.map((n) => prepared(n, small, false))
       .sort((a, b) => a.depth - b.depth);
-    for (const item of nodes) paintNode(g, item.node, small, { flat: true });
-    stamp = { signature, bitmap };
-    return stamp;
+    for (const item of nodes) paintNode(g, item.node, small, { flat: true, roleTint });
+    cache.stamp = { signature, bitmap };
+    return cache.stamp;
   }
   function inspectDependencies(hit) {
     if (!hit || !layout || (hit.node.causal && hit.x > hit.y)) return [];
@@ -466,68 +684,97 @@ export function mountTensorScene(canvas, { onCell, onPick, onZoom } = {}) {
     if (length <= 0) return null;
     return { indices, axis, length };
   }
-  function layerIsStamp(layer, r) {
+  function layerIsStamp(model, layer, r, v) {
     return (
-      layout.repeatedLayerGeometry &&
-      layout.layers.length > 12 &&
-      layout.cell * scale < 0.14 &&
+      model.repeatedLayerGeometry &&
+      model.layers.length >= 8 &&
+      model.cell * v.scale < 0.14 &&
       Math.max(r[2] - r[0], r[3] - r[1]) < 650 &&
       !!layer.bounds
     );
   }
-  function candidates(x, y, v) {
-    const point = [x, y, x, y],
-      found = [...layout.root];
-    for (const layer of layout.layers) {
-      if (intersects(screenBox(layer.bounds, v), point)) found.push(...layerAt(layer.index).nodes);
+  function views() {
+    if (!placements.size) return [{ model: layout, v: makeView(), placement: null }];
+    const g = globalView(),
+      area = [0, 0, width, height],
+      list = [];
+    for (const m of placements.values()) {
+      const v = localView(m, g),
+        rect = screenBox(m.layout.bounds, v);
+      if (!intersects(rect, area)) continue;
+      list.push({ model: m.layout, v, placement: m, rect });
+    }
+    return list;
+  }
+  function publishMarkers(markers) {
+    if (!onWorldLabels) return;
+    const key = markers.map((m) => m.id + ':' + Math.round(m.x * 2) + ':' + Math.round(m.y * 2)).join('/');
+    if (key === lastMarkers) return;
+    lastMarkers = key;
+    onWorldLabels(markers);
+  }
+  function candidates(area, v, model) {
+    const found = [...model.root];
+    for (const layer of model.layers) {
+      if (intersects(screenBox(layer.bounds, v), area)) found.push(...layerAt(layer.index, model).nodes);
     }
     return found;
   }
-  function pickAt(x, y, v = makeView()) {
-    if (!layout) return null;
-    let hit = null;
-    const point = [x, y, x, y];
-    for (const original of candidates(x, y, v)) {
-      const n = displayed(original);
-      if (!intersects(screenBox(box(n), v), point)) continue;
-      for (const face of planes(n, v)) {
-        const next = pickFace(face, x, y, v);
-        if (next && (!hit || next.distance > hit.distance)) hit = next;
+  function pickScene(x, y, visibleModels, wide) {
+    let hit = null,
+      nearest = null;
+    for (const { model, v, placement } of visibleModels) {
+      const onlyModel = wide || model !== layout;
+      const tol = onlyModel ? 4 : 0;
+      const area = [x - tol, y - tol, x + tol, y + tol];
+      if (!intersects(screenBox(model.bounds, v), area)) continue;
+      for (const original of candidates(area, v, model)) {
+        const n = model === layout ? displayed(original) : original,
+          r = screenBox(box(n), v);
+        if (!intersects(r, area)) continue;
+        if (tol) {
+          const dx = Math.max(0, r[0] - x, x - r[2]),
+            dy = Math.max(0, r[1] - y, y - r[3]);
+          const d = Math.hypot(dx, dy);
+          if (d <= tol && (!nearest || d < nearest.delta)) nearest = { model: model.id, delta: d };
+        }
+        if (x < r[0] || y < r[1] || x > r[2] || y > r[3]) continue;
+        for (const face of planes(n, v)) {
+          const cell = pickFace(face, x, y, v);
+          if (!cell) continue;
+          const depth = placement
+            ? (cell.distance - dot(placement.localCenter, v.eye)) * placement.unit
+            : cell.distance;
+          if (!hit || depth > hit.depth)
+            hit = { model: onlyModel ? model.id : null, cell: onlyModel ? null : cell, depth };
+        }
       }
     }
-    return hit;
+    return hit ?? nearest;
   }
-  function draw() {
-    frame = 0;
-    ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
-    ctx.fillStyle = '#f3f3f2';
-    ctx.fillRect(0, 0, width, height);
-    if (!layout) return;
-    const v = makeView(),
-      area = [0, 0, width, height];
-    if (queuedPointer && !pointers.size) {
-      const next = pickAt(...queuedPointer, v);
-      select(next ?? pinned);
-      canvas.style.cursor = next ? 'crosshair' : 'grab';
-      queuedPointer = null;
-    }
-    let visible = layout.root.map((n) => prepared(n, v)).filter((item) => intersects(item.rect, area));
+  function drawModel(model, v, focused, wide) {
+    const area = [0, 0, width, height],
+      spacing = model.cell * v.scale;
+    const roleTint = placements.size ? clamp((0.62 - spacing) / 0.56, 0, 1) : 0;
+    const visible = model.root
+      .map((n) => prepared(n, v, focused))
+      .filter((item) => intersects(item.rect, area));
     const stamped = [];
-    for (const layer of layout.layers) {
+    for (const layer of model.layers) {
       const r = screenBox(layer.bounds, v);
       if (!intersects(r, area)) continue;
-      if (layerIsStamp(layer, r)) {
+      if (layerIsStamp(model, layer, r, v)) {
         stamped.push({ layer, r });
         continue;
       }
-      const nodes = layerAt(layer.index).nodes;
+      const nodes = layerAt(layer.index, model).nodes;
       for (const n of nodes) {
-        const item = prepared(n, v);
+        const item = prepared(n, v, focused);
         if (intersects(item.rect, area)) visible.push(item);
       }
     }
     if (stamped.length) {
-      const atlas = sceneStamp(v, stamped[0].r);
+      const atlas = sceneStamp(model, v, stamped[0].r, roleTint);
       stamped.sort(
         (a, b) => dot(a.layer.bounds.slice(0, 3), v.eye) - dot(b.layer.bounds.slice(0, 3), v.eye),
       );
@@ -535,39 +782,40 @@ export function mountTensorScene(canvas, { onCell, onPick, onZoom } = {}) {
       for (const { r } of stamped)
         ctx.drawImage(img, 1, 1, img.width - 2, img.height - 2, r[0], r[1], r[2] - r[0], r[3] - r[1]);
     }
-    const spacing = layout.cell * scale;
-    const deps = inspectDependencies(active),
+    const cell = focused && !wide ? active : null;
+    const deps = cell ? inspectDependencies(cell) : [],
       depIds = new Set(deps.map(({ source }) => source.id));
-    if (spacing > 0.68 && visible.length < 280) {
+    if (!wide && spacing > 0.68 && visible.length < 280) {
       for (const { node } of visible)
         for (const id of node.deps ?? []) {
-          const src = lookup(id, node.layer);
-          if (src && src.id !== node.id) connect(ctx, src, node, v, layout.cell);
+          const src = lookup(id, node.layer, model);
+          if (src && src.id !== node.id) connect(ctx, src, node, v, model.cell);
         }
     }
     visible.sort((a, b) => compareDepth(a, b, v));
     for (const item of visible)
       paintNode(ctx, item.node, v, {
-        sample,
+        sample: focused && !wide ? sample : null,
+        roleTint,
         cache: tiles,
-        shape: layout.shape,
+        shape: model.shape,
         flat: spacing < 0.075,
-        selected: active?.node.id === item.node.id,
+        selected: cell?.node.id === item.node.id,
         dependency: depIds.has(item.node.id),
       });
-    if (labels) {
+    if (labels && focused && !wide) {
       const used = [];
       if (spacing > 0.55 && visible.length < 340) {
         const ranked = [...visible].sort(
           (a, b) =>
-            Number(b.node.id === active?.node.id) - Number(a.node.id === active?.node.id) ||
+            Number(b.node.id === cell?.node.id) - Number(a.node.id === cell?.node.id) ||
             (b.rect[2] - b.rect[0]) * (b.rect[3] - b.rect[1]) -
               (a.rect[2] - a.rect[0]) * (a.rect[3] - a.rect[1]),
         );
         for (const { node, rect: r } of ranked) {
           const w = r[2] - r[0],
             h = r[3] - r[1],
-            isActive = node.id === active?.node.id;
+            isActive = node.id === cell?.node.id;
           if (!isActive && Math.max(w, h) < 10) continue;
           const p = v.project([node.x + node.dx / 2, node.y, node.z + node.dz]);
           const x = clamp(
@@ -587,9 +835,9 @@ export function mountTensorScene(canvas, { onCell, onPick, onZoom } = {}) {
           if (r[3] > 0 && r[1] < height)
             tag(ctx, title, x, y, clamp(11.1 + spacing * 0.68, 12, 16), area, used, isActive);
         }
-      } else if (stamped.length || layout.layers.length) {
-        const interval = Math.max(1, Math.ceil(layout.layers.length / 12));
-        for (const layer of layout.layers) {
+      } else if (stamped.length || model.layers.length) {
+        const interval = Math.max(1, Math.ceil(model.layers.length / 12));
+        for (const layer of model.layers) {
           if (layer.index % interval !== 0) continue;
           const r = screenBox(layer.bounds, v);
           if (intersects(area, r) && r[3] - r[1] > 12)
@@ -597,8 +845,8 @@ export function mountTensorScene(canvas, { onCell, onPick, onZoom } = {}) {
         }
       }
     }
-    if (active) {
-      const h = active,
+    if (cell) {
+      const h = cell,
         end = v.project(cellPoint(h.node, h.x, h.y, h.z));
       const closeEnough = end[0] > -5 && end[0] < width + 5 && end[1] > -5 && end[1] < height + 5;
       if (closeEnough) {
@@ -616,6 +864,39 @@ export function mountTensorScene(canvas, { onCell, onPick, onZoom } = {}) {
         paintSlice(ctx, h.node, [h.x, h.y, h.z], v);
       }
     }
+    if (!wide) return Infinity;
+    // Use the geometry actually drawn. Empty corners of a model's global AABB
+    // can sit well above its first tensor at oblique angles.
+    let top = Infinity;
+    for (const item of visible) top = Math.min(top, item.rect[1]);
+    for (const item of stamped) top = Math.min(top, item.r[1]);
+    return top;
+  }
+  function draw(time) {
+    frame = 0;
+    advanceFlight(time);
+    ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+    ctx.fillStyle = '#f3f3f2';
+    ctx.fillRect(0, 0, width, height);
+    if (!layout) return;
+    const models = views(),
+      wide = isWide();
+    if (flight) queuedPointer = null;
+    if (queuedPointer && !pointers.size) {
+      const hit = pickScene(...queuedPointer, models, wide);
+      select(hit?.model || wide ? null : (hit?.cell ?? pinned));
+      canvas.style.cursor = hit?.model ? 'pointer' : hit?.cell ? 'crosshair' : 'grab';
+      queuedPointer = null;
+    }
+    const markers = [];
+    for (const info of models) {
+      const top = drawModel(info.model, info.v, info.model === layout, wide);
+      if (!info.placement || !wide) continue;
+      const x = info.v.project(info.placement.localCenter)[0],
+        y = top - 4;
+      if (x >= 0 && x <= width && y >= 16 && y <= height) markers.push({ id: info.model.id, x, y });
+    }
+    publishMarkers(markers);
     inform();
   }
   function resize() {
@@ -628,9 +909,13 @@ export function mountTensorScene(canvas, { onCell, onPick, onZoom } = {}) {
     if (canvas.width !== Math.round(width * dpr)) canvas.width = Math.round(width * dpr);
     if (canvas.height !== Math.round(height * dpr)) canvas.height = Math.round(height * dpr);
     if (layout && (width !== oldW || height !== oldH)) {
-      baseline = fit();
-      if (overviewMode) scale = baseline;
-      zoomNotice();
+      if (entries.length) placements = arrangeWorld(entries, width, height);
+      if (overviewMode === 'world') overview();
+      else if (overviewMode === 'model') fitModel();
+      else {
+        baseline = placements.get(layout.id)?.unit ?? fit();
+        zoomNotice();
+      }
     }
     redraw();
   }
@@ -651,11 +936,16 @@ export function mountTensorScene(canvas, { onCell, onPick, onZoom } = {}) {
   const on = (type, fn, extra = {}) => canvas.addEventListener(type, fn, { signal, ...extra });
   on('pointerdown', (e) => {
     if (e.button !== 0 && e.button !== 2 && e.button !== 1) return;
+    if (e.button === 1) e.preventDefault();
+    if (flight) {
+      flight = null;
+      overviewMode = false;
+    }
     const pos = local(e);
     pointers.set(e.pointerId, { pos, start: pos, moved: false });
     canvas.setPointerCapture(e.pointerId);
     queuedPointer = null;
-    pressedMode = e.button === 2 || e.altKey || e.shiftKey ? 'orbit' : interaction;
+    pressedMode = e.button === 1 || e.button === 2 || e.altKey || e.shiftKey ? 'orbit' : interaction;
     if (pointers.size > 1) {
       for (const p of pointers.values()) p.moved = true;
       ({ mid: pinchMid, dist: pinchDistance } = two());
@@ -696,8 +986,18 @@ export function mountTensorScene(canvas, { onCell, onPick, onZoom } = {}) {
       pinchDistance = 0;
     }
     if (!p.moved && e.type === 'pointerup' && e.button === 0) {
-      const hit = select(pickAt(...local(e)), true, true);
-      if (hit) onPick?.(hit);
+      const target = layout && pickScene(...local(e), views(), isWide());
+      if (target?.model) {
+        select(null, true);
+        if (onModelPick) onModelPick(target.model);
+        else {
+          setLayout(placements.get(target.model).layout);
+          fitModel({ animate: true });
+        }
+      } else {
+        const hit = select(target?.cell ?? null, true, true);
+        if (hit) onPick?.(hit);
+      }
     }
     if (!pointers.size) canvas.style.cursor = 'grab';
   }
@@ -709,6 +1009,12 @@ export function mountTensorScene(canvas, { onCell, onPick, onZoom } = {}) {
     if (!pointers.size) select(pinned);
   });
   on('contextmenu', (e) => e.preventDefault());
+  on('auxclick', (e) => {
+    if (e.button === 1) e.preventDefault();
+  });
+  on('mousedown', (e) => {
+    if (e.button === 1) e.preventDefault();
+  });
   on(
     'wheel',
     (e) => {
@@ -730,8 +1036,10 @@ export function mountTensorScene(canvas, { onCell, onPick, onZoom } = {}) {
     if (directions[key]) (e.shiftKey ? orbit : pan)(...directions[key]);
     else if (key === '+' || key === '=') zoomBy(1.32);
     else if (key === '-') zoomBy(1 / 1.32);
-    else if (key === 'Home' || key === '0') overview();
-    else if (key.toLowerCase() === 'f') centerCell();
+    else if (key === 'Home' || key === '0') {
+      if (onOverview) onOverview();
+      else overview({ animate: true });
+    } else if (key.toLowerCase() === 'f') centerCell();
     else if (key === 'Escape') select(null, true);
     else return;
     e.preventDefault();
@@ -743,7 +1051,9 @@ export function mountTensorScene(canvas, { onCell, onPick, onZoom } = {}) {
   resize();
 
   return {
+    setWorld,
     setLayout,
+    fitModel,
     overview,
     focus,
     focusCell,
@@ -776,10 +1086,12 @@ export function mountTensorScene(canvas, { onCell, onPick, onZoom } = {}) {
       events.abort();
       watcher.disconnect();
       cancelAnimationFrame(frame);
-      layers.clear();
+      entries = [];
+      placements.clear();
+      flight = null;
+      publishMarkers([]);
       tiles.clear();
       pointers.clear();
-      stamp = null;
     },
   };
 }

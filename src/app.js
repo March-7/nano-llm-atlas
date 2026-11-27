@@ -4,10 +4,12 @@ import { inspectNano } from './nano.js?v=2';
 import { models, chapters, tabLabels, isGPT2, isModern } from './detail/catalog.js';
 import { classicLayout } from './detail/classic-layout.js';
 import { gpt2Values } from './detail/gpt2-values.js';
-import { mountTensorScene } from './detail/tensor-scene.js';
+import { mountTensorScene } from './detail/tensor-scene.js?v=3.1';
+import { modernExample } from './detail/modern.js';
+import { mountReader } from './detail/reader.js';
 import { createLocator } from './detail/locator.js';
 import { cellKey, readCell, placeTooltip } from './detail/inspector.js';
-import { messages, guideRows } from './detail/words.js';
+import { messages, guideRows } from './detail/words.js?v=3';
 
 const $ = (id) => document.getElementById(id);
 const params = () => new URL(location.href).searchParams;
@@ -22,7 +24,6 @@ function savedLang() {
 let lang = (params().get('lang') || savedLang()) === 'en' ? 'en' : 'zh';
 const tr = (key) => messages[lang][key];
 const t = (zh, en) => (lang === 'zh' ? zh : en);
-const number = (n) => n.toLocaleString('en-US');
 const integer = (v, fallback = 0) =>
   v !== null && v !== '' && Number.isInteger(Number(v)) ? Number(v) : fallback;
 const external = (href, label, cls) =>
@@ -36,13 +37,12 @@ let model,
   prefix = 'AACBAB',
   samplePrefix = '',
   pendingPrefix = '',
-  nanoRequest = 0,
-  modelRequest = 0;
+  nanoRequest = 0;
 let stage = 'norm',
   operation = 'ln2.lnResid',
   layer = 0,
   head = 0,
-  mode = 'detail',
+  mode = 'all',
   pinned = null,
   hover = null;
 let labelState = true,
@@ -53,6 +53,44 @@ let labelState = true,
   weightStatus = '',
   readKey = '';
 const releaseSamples = new Map();
+let multipleModelsInView = false;
+const worldEntries = models.map(({ id, name }) => ({
+  id,
+  name,
+  layout: isModern(id) ? modernExample(id).layout : classicLayout(id),
+}));
+const layouts = new Map(worldEntries.map((entry) => [entry.id, entry.layout]));
+const worldPins = new Map(
+  models.map((m) => {
+    const pin = document.createElement('button');
+    pin.type = 'button';
+    pin.className = 'world-pin';
+    pin.dataset.worldModel = m.id;
+    pin.hidden = true;
+    const name = document.createElement('strong');
+    name.textContent = isModern(m.id) ? m.short : m.name;
+    const size = document.createElement('small');
+    size.textContent = m.displayParams + (isModern(m.id) ? ' · nano' : '');
+    pin.append(name, size);
+    $('world-labels').append(pin);
+    return [m.id, pin];
+  }),
+);
+const reader = mountReader({
+  onChapter(index) {
+    if (!layout) return;
+    stopTour();
+    goChapter(chapters(model.id)[index]);
+  },
+  onModelOverview() {
+    stopTour();
+    showOverview('overview');
+  },
+  onAll() {
+    stopTour();
+    showOverview('all');
+  },
+});
 let appliedSearch = location.search;
 
 document.querySelectorAll('i[data-icon]').forEach((slot) => {
@@ -60,10 +98,16 @@ document.querySelectorAll('i[data-icon]').forEach((slot) => {
 });
 const scene = mountTensorScene(canvas, {
   onCell: updateHover,
+  onWorldLabels: placeWorldLabels,
+  onModelPick: visitModel,
+  onOverview() {
+    stopTour();
+    showOverview('all');
+  },
   onPick(hit) {
     if (hit) {
       stopTour();
-      if (mode === 'overview') mode = 'detail';
+      if (mode === 'overview' || mode === 'all') mode = 'detail';
       pin(hit);
     }
   },
@@ -72,6 +116,7 @@ const scene = mountTensorScene(canvas, {
       (ratio >= 1000 ? Number((ratio / 1000).toPrecision(3)) + 'k' : Number(ratio.toPrecision(3))) + '×';
   },
 });
+scene.setWorld(worldEntries);
 const locator = createLocator((node, x, y, z) => {
   stopTour();
   mode = 'cell';
@@ -156,6 +201,7 @@ function pin(hit, save = true) {
   if (hit.node.layer >= 0) layer = hit.node.layer;
   if (hit.node.head >= 0) head = hit.node.head;
   drawChapters();
+  drawCaption();
   drawPinned();
   lab.selectStage(stage);
   if (save) writeURL();
@@ -218,10 +264,32 @@ function applyCopy() {
   $('language').setAttribute('aria-label', lang === 'zh' ? 'Switch to English' : '切换到中文');
   canvas.setAttribute('aria-label', tr('cellCanvas'));
   $('model-list').setAttribute('aria-label', tr('select'));
+  $('world-labels').setAttribute('aria-label', t('共享场景中的模型', 'Models in the shared scene'));
+  for (const [id, button] of worldPins) {
+    const name = models.find((m) => m.id === id).name;
+    button.setAttribute('aria-label', t('聚焦 ' + name, 'Focus ' + name));
+  }
   $('guide-body').innerHTML = guideRows(lang)
     .map(([a, b]) => `<div class="guide-row"><span>${escape(a)}</span><kbd>${escape(b)}</kbd></div>`)
     .join('');
   updateFullscreen();
+}
+function placeWorldLabels(markers) {
+  const visible = new Set();
+  for (const { id, x, y } of markers) {
+    const button = worldPins.get(id);
+    if (!button) continue;
+    button.hidden = false;
+    button.style.left = Math.round(x) + 'px';
+    button.style.top = Math.round(y) + 'px';
+    visible.add(id);
+  }
+  for (const [id, button] of worldPins) if (!visible.has(id)) button.hidden = true;
+  const multiple = visible.size > 1;
+  if (multiple !== multipleModelsInView) {
+    multipleModelsInView = multiple;
+    drawCaption();
+  }
 }
 function drawTabs() {
   const list = $('model-list');
@@ -230,9 +298,21 @@ function drawTabs() {
       .map((m) => `<button type="button" data-model="${m.id}">${tabLabels[m.id]}</button>`)
       .join('');
   for (const b of list.children) b.setAttribute('aria-pressed', String(b.dataset.model === model.id));
+  for (const [id, pin] of worldPins) pin.setAttribute('aria-current', String(id === model.id));
 }
 function drawCaption() {
   if (!model) return;
+  const panorama = mode === 'all' || multipleModelsInView;
+  $('gallery-short').hidden = panorama;
+  if (panorama) {
+    $('view-model').textContent = t('模型全览', 'Model atlas');
+    $('view-stats').textContent = t('6 个模型', '6 models');
+    $('value-source').textContent = t(
+      '各模型分别缩放 · 点击图中模型即可聚焦',
+      'Models scaled individually · select a network to focus',
+    );
+    return;
+  }
   $('view-model').textContent = model.name;
   let size = `${model.displayParams} · ${model.layers} ${t('层', 'layers')}`;
   if (isModern(model.id))
@@ -273,25 +353,8 @@ function drawSources() {
 }
 function drawChapters() {
   if (!model) return;
-  const items = chapters(model.id);
-  let current = items.findIndex((ch) => ch.op === operation);
-  if (current < 0) current = items.findIndex((ch) => ch.stage === stage);
-  $('stage-list').innerHTML = items
-    .map(
-      (ch, i) =>
-        `<button type="button" data-chapter="${i}" aria-pressed="${mode !== 'overview' && i === current}">${escape(ch.label[lang])}</button>`,
-    )
-    .join('');
-  const description = model.stages?.find((s) => s.id === stage)?.summary[lang];
-  $('stage-description').textContent =
-    description ??
-    t(
-      '点击步骤定位到对应张量，或通过“定位张量”跳转到指定层、头与标量坐标。',
-      'Select a step or use Find tensor to jump to a particular layer, head and scalar index.',
-    );
-  $('play').innerHTML =
-    icon(playTimer ? 'pause' : 'play') + '<span>' + tr(playTimer ? 'pause' : 'play') + '</span>';
-  $('play').setAttribute('aria-pressed', String(!!playTimer));
+  reader.render(model, { stage, operation, mode, lang, playing: Boolean(playTimer) });
+  $('fit').setAttribute('aria-pressed', String(mode === 'all'));
 }
 function stopTour() {
   if (!playTimer) return;
@@ -318,13 +381,28 @@ function goChapter(ch, save = true) {
   const hit = scene.inspectCell(n, x, y, 0);
   if (hit) pin(hit, save);
 }
-function fitAll(save = true) {
+function showOverview(view, save = true, animate = save) {
+  if (!layout) return;
   pinned = null;
-  mode = 'overview';
-  scene.overview();
+  mode = view;
+  stage = 'embed';
+  operation = isModern(model.id) ? 'embed' : 'residual0';
+  if (view === 'all') scene.overview({ animate });
+  else scene.fitModel({ animate });
   drawChapters();
+  drawCaption();
   drawPinned();
+  lab.selectStage(stage);
   if (save) writeURL();
+}
+function visitModel(id) {
+  if (!layouts.has(id)) return;
+  stopTour();
+  if (model?.id === id && layout) {
+    showOverview('overview');
+    return;
+  }
+  chooseModel(id, new URLSearchParams({ view: 'network' }), true);
 }
 function writeURL(method = 'replace') {
   if (!model || !layout) return;
@@ -335,7 +413,8 @@ function writeURL(method = 'replace') {
   const q = url.searchParams;
   q.set('model', model.id);
   q.set('lang', lang);
-  if (mode === 'overview') q.set('view', 'network');
+  if (mode === 'all') q.set('view', 'all');
+  else if (mode === 'overview') q.set('view', 'network');
   else {
     q.set('stage', stage);
     q.set('tensor', operation);
@@ -359,9 +438,8 @@ function writeURL(method = 'replace') {
   appliedSearch = url.search;
 }
 
-async function chooseModel(id, route = null, save = false) {
+function chooseModel(id, route = null, save = false) {
   const next = models.find((m) => m.id === id) || models.find((m) => m.id === 'nanogpt');
-  const request = ++modelRequest;
   ++nanoRequest;
   stopTour();
   cancelRead();
@@ -378,23 +456,12 @@ async function chooseModel(id, route = null, save = false) {
   drawTabs();
   drawCaption();
   drawSources();
-  const modern = isModern(id);
-  let nextLayout, data;
-  if (modern) {
-    const { modernExample } = await import('./detail/modern.js');
-    if (request !== modelRequest) return;
-    const result = modernExample(id);
-    nextLayout = result.layout;
-    data = result.sample;
-  } else {
-    nextLayout = classicLayout(next.id);
-    if (isGPT2(next.id)) {
-      if (!releaseSamples.has(next.id)) releaseSamples.set(next.id, gpt2Values(next.id));
-      data = releaseSamples.get(next.id);
-    }
+  layout = layouts.get(next.id);
+  if (isModern(next.id)) sample = modernExample(next.id).sample;
+  else if (isGPT2(next.id)) {
+    if (!releaseSamples.has(next.id)) releaseSamples.set(next.id, gpt2Values(next.id));
+    sample = releaseSamples.get(next.id);
   }
-  layout = nextLayout;
-  sample = data ?? null;
   layer = Math.max(0, Math.min(layout.layers.length - 1, integer(route?.get('layer'), 1) - 1));
   head = Math.max(0, Math.min(model.heads - 1, integer(route?.get('head'), 1) - 1));
   scene.setLayout(layout);
@@ -407,11 +474,12 @@ async function chooseModel(id, route = null, save = false) {
     tour.find((ch) => ch.stage === route?.get('stage')) ||
     tour.find((ch) => ch.stage === defaultStage) ||
     tour[0];
-  const defaultOverview = (isGPT2(id) || id === 'gpt3') && !route?.get('tensor') && !route?.get('stage');
-  if (route?.get('view') === 'network' || defaultOverview) {
-    stage = 'embed';
-    operation = 'residual0';
-    fitAll(false);
+  const addressed = route?.has('tensor') || route?.has('stage');
+  const openWorld =
+    route?.get('view') === 'all' || (!route?.has('model') && !addressed && !route?.has('view'));
+  if (openWorld) showOverview('all', false, save);
+  else if (route?.get('view') === 'network' || (!addressed && (isGPT2(next.id) || next.id === 'gpt3'))) {
+    showOverview('overview', false, save);
   } else {
     const op = route?.get('tensor') || chapter.op;
     const node = scene.focus(op, preferred(op), head);
@@ -437,6 +505,7 @@ async function chooseModel(id, route = null, save = false) {
   drawChapters();
   drawPinned();
   if (save) writeURL('push');
+  else reader.followHash();
 }
 
 function updateFullscreen() {
@@ -469,16 +538,12 @@ $('expand').addEventListener('click', async () => {
 });
 document.addEventListener('fullscreenchange', updateFullscreen);
 $('model-list').addEventListener('click', (event) => {
-  const b = event.target.closest('[data-model]');
-  if (b && b.dataset.model !== model?.id) chooseModel(b.dataset.model, null, true);
+  const button = event.target.closest('[data-model]');
+  if (button) visitModel(button.dataset.model);
 });
-$('stage-list').addEventListener('click', (event) => {
-  const b = event.target.closest('[data-chapter]');
-  if (!b || !layout) return;
-  stopTour();
-  goChapter(chapters(model.id)[Number(b.dataset.chapter)]);
-  $('explorer').scrollIntoView({ block: 'start' });
-  canvas.focus({ preventScroll: true });
+$('world-labels').addEventListener('click', (event) => {
+  const button = event.target.closest('[data-world-model]');
+  if (button) visitModel(button.dataset.worldModel);
 });
 $('play').addEventListener('click', () => {
   if (!layout) return;
@@ -490,7 +555,6 @@ $('play').addEventListener('click', () => {
   let current = list.findIndex((ch) => ch.op === operation);
   if (current < 0 || current === list.length - 1) current = 0;
   goChapter(list[current]);
-  $('explorer').scrollIntoView({ block: 'start' });
   playTimer = setInterval(() => {
     goChapter(list[++current]);
     if (current === list.length - 1) stopTour();
@@ -499,7 +563,7 @@ $('play').addEventListener('click', () => {
 });
 $('fit').addEventListener('click', () => {
   stopTour();
-  if (layout) fitAll();
+  showOverview('all');
 });
 $('detail').addEventListener('click', () => {
   stopTour();
@@ -544,7 +608,7 @@ $('return-cell').addEventListener('click', () => {
   if (!pinned) return;
   const h = pinned;
   mode = 'cell';
-  $('explorer').scrollIntoView();
+  reader.revealScene();
   pin(scene.focusCell(h.node, h.x, h.y, h.z));
 });
 $('language').addEventListener('click', () => {

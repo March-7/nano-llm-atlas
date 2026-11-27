@@ -14,7 +14,7 @@
   align-items: center;
   gap: 30px;
   padding: 0 clamp(12px, 2vw, 34px);
-  background: #20232c;
+  background: #192a48;
   color: #f5f5f8;
   border-bottom: 1px solid #333742;
 }
@@ -57,9 +57,8 @@
   position: relative;
   isolation: isolate;
   width: 100%;
-  height: calc(100svh - 98px);
-  min-height: 490px;
-  max-height: 1480px;
+  flex: 1 1 0;
+  min-height: 0;
   overflow: hidden;
   background: var(--world);
   border-bottom: 1px solid #d4d5d6;
@@ -104,7 +103,6 @@
 .stage-legend > span,
 .diagram-caption,
 .diagram-caption > div,
-.chapter-list,
 .locator-head,
 .apply-location,
 .tip-heading,
@@ -337,9 +335,11 @@
   pointer-events: none;
   width: max-content;
   max-width: min(400px, calc(100% - 18px));
-  background: #111411;
+  background: rgb(12 17 21 / 72%);
+  -webkit-backdrop-filter: blur(1.25px);
+  backdrop-filter: blur(1.25px);
   color: #f0f2f0;
-  border: 1px solid #20241f;
+  border: 1px solid rgb(20 27 31 / 48%);
   border-radius: 5px;
   box-shadow: 0 3px 10px #16201922;
   overflow-wrap: anywhere;
@@ -391,7 +391,7 @@
 .tip-substitution,
 .tip-source {
   display: block;
-  color: #cbd1c8;
+  color: #e3e9e2;
   font: 500 11px/1.55 var(--mono);
   overflow-wrap: anywhere;
   max-width: 100%;
@@ -399,40 +399,12 @@
 }
 .tip-source {
   font: 500 10px/1.4 var(--sans);
-  color: #b8c0b9;
+  color: #dbe3de;
 }
 .tip-substitution:empty,
 .tip-source:empty {
   display: none;
 }
-.supplemental {
-  margin-top: 15px;
-}
-.chapter-panel,
-.picked-panel {
-  padding: 15px 18px;
-}
-.picked-panel {
-  margin-top: 10px;
-}
-.chapter-list {
-  gap: 5px;
-  flex-wrap: wrap;
-}
-.chapter-list button {
-  padding: 5px 9px;
-  border-radius: 5px;
-  font-size: 12px;
-  background: #f6f7f9;
-  border: 1px solid var(--line);
-  color: #47515e;
-}
-.chapter-list button[aria-pressed='true'] {
-  border-color: #aac1d9;
-  background: #e5eef8;
-  color: #233f60;
-}
-.chapter-note,
 #picked {
   margin: 9px 0 0;
   color: #565e69;
@@ -495,10 +467,6 @@ body.in-theater {
   }
   .studio-header #show-guide > span {
     display: none;
-  }
-  .diagram {
-    height: calc(100svh - 112px);
-    min-height: 460px;
   }
   .diagram-toolbar {
     left: 8px;
@@ -582,19 +550,5 @@ body.in-theater {
   }
   .tip-substitution {
     font-size: 9px;
-  }
-  .supplemental {
-    margin-top: 8px;
-  }
-  .chapter-panel,
-  .picked-panel {
-    padding: 11px;
-  }
-  .chapter-list {
-    gap: 4px;
-  }
-  .chapter-list button {
-    font-size: 11px;
-    padding: 4px 6px;
   }
 }
