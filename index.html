@@ -1,0 +1,170 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <meta name="theme-color" content="#f7f8fb" />
+    <meta
+      name="description"
+      content="交互式 3D 语言模型图谱。从 NanoGPT 的真实排序预测，到 Llama 3.1 的共享 KV 头和 Qwen3.8 的混合解码器。"
+    />
+    <title>Tensor Atlas · 语言模型解剖台</title>
+    <link rel="icon" type="image/svg+xml" href="./assets/mark.svg" />
+    <link rel="stylesheet" href="./src/style.css" />
+    <script type="module" src="./src/app.js"></script>
+  </head>
+  <body>
+    <a class="skip" href="#explorer" data-t="skip">跳到模型探索器</a>
+    <header class="site-header">
+      <div class="frame header-inner">
+        <a class="brand" href="./" aria-label="Tensor Atlas"
+          ><img src="./assets/mark.svg" width="33" height="33" alt="" />Tensor <b>Atlas</b></a
+        >
+        <nav class="site-nav" aria-label="导航" data-aria="nav">
+          <a href="#explorer" aria-current="location" data-nav="explorer" data-t="explore">探索器</a>
+          <a href="#references" data-nav="references" data-t="references">参考资料</a>
+        </nav>
+        <div class="header-actions">
+          <button id="language" class="quiet-button language" type="button" aria-label="Switch to English">
+            <i data-icon="globe"></i><span>EN</span>
+          </button>
+          <span class="header-rule"></span>
+          <a
+            class="quiet-button repo-link"
+            href="https://github.com/March-7/nano-llm-atlas"
+            target="_blank"
+            rel="noopener noreferrer"
+            aria-label="GitHub"
+            ><i data-icon="github"></i><span>GitHub</span></a
+          >
+        </div>
+      </div>
+    </header>
+    <main class="frame">
+      <div class="intro">
+        <div>
+          <h1 data-t="title">语言模型解剖台</h1>
+          <p data-t="intro">旋转三维张量，沿着一次前向传播，探索语言模型的内部结构。</p>
+        </div>
+        <button class="guide-button" id="show-guide" type="button">
+          <i data-icon="compass"></i><span data-t="guide">操作指南</span>
+        </button>
+      </div>
+      <section id="explorer" aria-label="模型探索器" data-aria="explore">
+        <div
+          class="model-list"
+          id="model-list"
+          role="group"
+          aria-label="选择模型"
+          data-aria="chooseModel"
+        ></div>
+        <div class="workbench">
+          <section class="viewer" id="viewer" aria-labelledby="view-model">
+            <header class="viewer-head">
+              <div class="viewer-title">
+                <i data-icon="box"></i><span id="view-model">NanoGPT</span><span class="view-type">3D</span
+                ><span id="display-scale" class="display-scale"></span>
+              </div>
+              <div class="view-options">
+                <button id="labels" class="view-toggle" type="button" aria-pressed="true">
+                  <i data-icon="tag"></i><span data-t="labels">标注</span>
+                </button>
+                <button id="explode" class="view-toggle" type="button" aria-pressed="true">
+                  <i data-icon="layers"></i><span data-t="explode">分解</span>
+                </button>
+              </div>
+            </header>
+            <div class="canvas-field">
+              <canvas
+                id="scene"
+                tabindex="0"
+                aria-label="可旋转的三维模型。点击张量或使用下方计算路径查看构件。"
+                data-aria="canvas"
+              ></canvas>
+              <div id="fullscreen-component" class="fullscreen-component"></div>
+            </div>
+            <footer class="view-foot">
+              <span class="gesture"
+                ><i data-icon="orbit"></i><span data-t="gesture">拖动旋转 · 滚轮缩放</span></span
+              >
+              <div class="camera-tools">
+                <button id="zoom-out" type="button" data-tip="zoomOut"><i data-icon="minus"></i></button>
+                <output id="zoom" aria-label="缩放比例" data-aria="zoom">100%</output>
+                <button id="zoom-in" type="button" data-tip="zoomIn"><i data-icon="plus"></i></button>
+                <span></span>
+                <button id="reset" type="button" data-tip="reset"><i data-icon="reset"></i></button>
+                <button id="expand" type="button" data-tip="expand" aria-pressed="false">
+                  <i data-icon="expand"></i>
+                </button>
+              </div>
+            </footer>
+          </section>
+          <aside class="inspector panel" aria-labelledby="inspector-heading">
+            <header class="panel-bar">
+              <span
+                ><i data-icon="scan"></i><b id="inspector-heading" data-t="inspector">构件检查器</b></span
+              ><output id="step-index" class="mono"></output>
+            </header>
+            <div id="component" class="component" aria-live="polite" aria-atomic="true"></div>
+            <footer class="inspector-foot">
+              <a id="gallery-short" class="inspector-gallery" target="_blank" rel="noopener noreferrer"
+                ><i data-icon="book"></i><span data-t="view2d">对照二维图谱</span
+                ><i data-icon="external"></i
+              ></a>
+              <div>
+                <button id="previous" type="button" class="square-button" data-tip="previous">
+                  <i data-icon="left"></i></button
+                ><button id="next" type="button" class="square-button" data-tip="next">
+                  <i data-icon="right"></i>
+                </button>
+              </div>
+            </footer>
+          </aside>
+        </div>
+        <section class="path panel" aria-labelledby="path-heading">
+          <div class="path-top">
+            <h2 id="path-heading"><i data-icon="route"></i><span data-t="path">构件导览</span></h2>
+            <button id="play" type="button" class="play-button">
+              <i data-icon="play"></i><span data-t="play">自动播放</span>
+            </button>
+          </div>
+          <div id="stage-list" class="stage-list" role="group" aria-labelledby="path-heading"></div>
+        </section>
+      </section>
+      <section class="lab panel" id="lab" aria-labelledby="lab-heading"></section>
+      <div id="references" class="detail-grid">
+        <section class="panel fact-sheet" aria-labelledby="facts-heading">
+          <h2 id="facts-heading"><i data-icon="sliders"></i><span data-t="specs">模型规格</span></h2>
+          <dl id="facts" class="facts"></dl>
+          <p id="scope" class="scope"></p>
+        </section>
+        <section class="panel reading" aria-labelledby="reading-heading">
+          <h2 id="reading-heading"><i data-icon="book"></i><span data-t="reading">二维图谱与来源</span></h2>
+          <div id="reading"></div>
+        </section>
+      </div>
+    </main>
+    <footer class="page-foot frame">
+      <span class="foot-brand"
+        ><img src="./assets/mark.svg" width="20" height="20" alt="" />Tensor Atlas</span
+      ><span
+        ><span data-t="inspired">交互灵感来自</span>
+        <a href="https://bbycroft.net/llm" target="_blank" rel="noopener noreferrer"
+          >Brendan Bycroft ↗</a
+        ></span
+      >
+    </footer>
+    <dialog id="guide-dialog" aria-labelledby="guide-heading">
+      <div class="dialog-head">
+        <h2 id="guide-heading" data-t="guide">操作指南</h2>
+        <button type="button" id="close-guide" class="square-button" data-tip="close">
+          <i data-icon="close"></i>
+        </button>
+      </div>
+      <div id="guide-body"></div>
+    </dialog>
+    <noscript
+      ><p>请启用 JavaScript 以探索交互式 3D 模型。Enable JavaScript to explore the 3D models.</p></noscript
+    >
+  </body>
+</html>
